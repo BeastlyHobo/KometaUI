@@ -28,7 +28,39 @@ import requests
 from PIL import Image, ImageFilter
 
 sys.path.append("/app/kometa")
+from modules import util  # noqa: E402
+
+
+class DummyLogger:
+    def debug(self, *args, **kwargs):
+        pass
+
+    def info(self, *args, **kwargs):
+        pass
+
+    def warning(self, *args, **kwargs):
+        pass
+
+    def error(self, *args, **kwargs):
+        pass
+
+    def trace(self, *args, **kwargs):
+        pass
+
+    def ghost(self, *args, **kwargs):
+        pass
+
+    def exorcise(self, *args, **kwargs):
+        pass
+
+    def separator(self, *args, **kwargs):
+        pass
+
+
+util.logger = DummyLogger()
 from modules import overlay as overlay_mod  # noqa: E402
+
+overlay_mod.logger = util.logger
 
 
 class DummyGitHub:
