@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import FileResponse
 
 from .auth import AuthMiddleware
 from .db import init_db
@@ -30,7 +31,14 @@ def create_app() -> FastAPI:
 
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
-        app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
+        class SPAStaticFiles(StaticFiles):
+            async def get_response(self, path: str, scope):  # type: ignore[override]
+                response = await super().get_response(path, scope)
+                if response.status_code == 404:
+                    return await super().get_response("index.html", scope)
+                return response
+
+        app.mount("/", SPAStaticFiles(directory=static_dir, html=True), name="static")
     else:
         @app.get("/")
         def index() -> HTMLResponse:
