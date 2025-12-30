@@ -1,0 +1,33 @@
+version: "3.9"
+
+services:
+  kometa:
+    image: kometateam/kometa:latest
+    container_name: kometa
+    volumes:
+      - kometa_config:/config
+      - kometa_logs:/logs
+
+  kometa-ui:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: kometa-ui
+    ports:
+      - "6161:6161"
+    environment:
+      PORT: "6161"
+      AUTH_MODE: "none"
+      KOMETA_CONTAINER_NAME: "kometa"
+      KOMETA_RUN_CMD: "python kometa.py -c /config/config.yml"
+      ALLOW_DOCKER_SOCKET: "true"
+    volumes:
+      - kometa_config:/config
+      - kometa_logs:/logs
+      - kometa_ui_data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  kometa_config:
+  kometa_logs:
+  kometa_ui_data:
