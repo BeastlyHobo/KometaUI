@@ -2,17 +2,28 @@ version: "3.9"
 
 services:
   kometa:
-    image: kometateam/kometa:latest
+    image: lscr.io/linuxserver/kometa:latest
     container_name: kometa
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/Los_Angeles
+      - KOMETA_TIME=03:00
+      - KOMETA_RUN=False
+      - KOMETA_TEST=False
+      - KOMETA_NO_MISSING=False
     volumes:
-      - kometa_config:/config
-      - kometa_logs:/logs
+      - /opt/kometa/config:/config
+      - /home/trashpanda/Media-Scripts/Plex/assets:/assets
+    restart: unless-stopped
 
   kometa-ui:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
+    image: ghcr.io/beastlyhobo/kometaui:latest
     container_name: kometa-ui
+    depends_on:
+      - kometa
     ports:
       - "6161:6161"
     environment:
@@ -21,13 +32,13 @@ services:
       KOMETA_CONTAINER_NAME: "kometa"
       KOMETA_RUN_CMD: "python kometa.py -c /config/config.yml"
       ALLOW_DOCKER_SOCKET: "true"
+      CONFIG_FILE: "/config/config.yml"
+      LOG_DIR: "/config/logs"
     volumes:
-      - kometa_config:/config
-      - kometa_logs:/logs
+      - /opt/kometa/config:/config
       - kometa_ui_data:/data
       - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
 
 volumes:
-  kometa_config:
-  kometa_logs:
   kometa_ui_data:
