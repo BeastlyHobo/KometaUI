@@ -504,10 +504,24 @@ button:hover:not(:disabled) {
   gap: 24px;
 }
 
+.overlay-layout.wide-preview {
+  grid-template-columns: 1fr minmax(240px, 320px);
+  align-items: start;
+}
+
 .overlay-controls {
   display: flex;
   flex-direction: column;
   gap: 20px;
+}
+
+.overlay-preview-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  position: sticky;
+  top: 18px;
+  align-self: start;
 }
 
 .overlay-list {
@@ -543,6 +557,10 @@ button:hover:not(:disabled) {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 18px;
+}
+
+.overlay-preview-panel .overlay-preview {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
 .overlay-catalog {
@@ -727,6 +745,30 @@ button:hover:not(:disabled) {
 .collection-header .input.title {
   font-size: 16px;
   font-weight: 600;
+}
+
+.collapsible summary {
+  cursor: pointer;
+  font-weight: 600;
+  list-style: none;
+}
+
+.collapsible summary::-webkit-details-marker {
+  display: none;
+}
+
+.collapsible summary::after {
+  content: "v";
+  float: right;
+  color: var(--muted);
+}
+
+.collapsible[open] summary::after {
+  content: "^";
+}
+
+.collapsible > summary + * {
+  margin-top: 10px;
 }
 
 .builder-fields {

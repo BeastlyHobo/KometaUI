@@ -201,6 +201,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
+function hasMeaningfulValue(value: unknown): boolean {
+  if (value === null || value === undefined) {
+    return false;
+  }
+  if (typeof value === "string") {
+    return value.trim().length > 0;
+  }
+  return true;
+}
+
 function getOverlayConfig(entry: Record<string, unknown>): Record<string, unknown> {
   const overlayConfig = isRecord(entry.overlay) ? { ...(entry.overlay as Record<string, unknown>) } : {};
   OVERLAY_BLOCK_FIELDS.forEach((field) => {
@@ -1533,6 +1543,20 @@ export default function Config() {
     return defaultOverlayAssets.filter((asset) => asset.path.toLowerCase().includes(query));
   }, [defaultOverlayAssets, defaultOverlayQuery]);
 
+  const overlayValidationIssues = useMemo(() => {
+    const issues: string[] = [];
+    Object.entries(overlaysMap).forEach(([name, overlayEntry]) => {
+      const entry = isRecord(overlayEntry) ? overlayEntry : {};
+      const overlayConfig = getOverlayConfig(entry);
+      const backAlign =
+        typeof overlayConfig.back_align === "string" ? overlayConfig.back_align.trim() : "";
+      if (backAlign && backAlign !== "center" && !hasMeaningfulValue(overlayConfig.back_width)) {
+        issues.push(`${name}: back_align requires back_width`);
+      }
+    });
+    return issues;
+  }, [overlaysMap]);
+
   const resolveOverlayImage = useCallback(
     (overlayConfig: Record<string, unknown>, fallbackName?: string | null) => {
       const directFile = typeof overlayConfig.file === "string" ? overlayConfig.file.trim() : "";
@@ -1610,6 +1634,386 @@ export default function Config() {
       return style;
     },
     [overlayScale]
+  );
+
+  const overlayPreviewPanel = (
+    <div className="card overlay-designer overlay-preview-panel">
+      <div className="card-header">
+        <div>
+          <h2>Overlay preview</h2>
+          <p className="hint">Preview overlays quickly without leaving the editor.</p>
+        </div>
+        <span className="tag">Preview only</span>
+      </div>
+
+      <div className="overlay-layout wide-preview">
+        <div className="overlay-preview-stage">
+          <div className="overlay-preview">
+            {SAMPLE_POSTERS.map((poster) => {
+              const cached = samplePosterMap[poster.id];
+              const imageUrl = cached ? samplePosterUrl(cached.id) : null;
+              const kometaPreview =
+                Boolean(kometaPreviewUrl) &&
+                (posterMode === "asset" ? poster.id === SAMPLE_POSTERS[0].id : poster.id === posterSampleId);
+              return (
+                <div key={poster.id} className="poster-card">
+                  <div
+                    className="poster-frame"
+                    ref={poster.id === SAMPLE_POSTERS[0].id ? posterFrameRef : undefined}
+                  >
+                    {kometaPreview ? (
+                      <img src={kometaPreviewUrl ?? ""} alt="Kometa preview" />
+                    ) : posterMode === "asset" && posterAssetPath ? (
+                      <img
+                        src={`/api/files/raw?path=${encodeURIComponent(posterAssetPath)}`}
+                        alt="Selected poster asset"
+                      />
+                    ) : imageUrl ? (
+                      <img src={imageUrl} alt={poster.label} />
+                    ) : (
+                      <div className={`poster-sample poster-${poster.id}`}>
+                        <span>{poster.label}</span>
+                      </div>
+                    )}
+                    {!kometaPreview &&
+                      previewOverlays.map(([overlayName, overlayEntry]) => {
+                        if (!overlayScale) {
+                          return null;
+                        }
+                        const entry = isRecord(overlayEntry) ? overlayEntry : {};
+                        const overlayConfig = getOverlayConfig(entry);
+                        const overlayMeta = parseOverlayName(overlayConfig.name);
+                        const positionStyle = buildOverlayPosition(overlayConfig);
+                        const baseStyle: CSSProperties = {
+                          position: "absolute",
+                          pointerEvents: "none",
+                          ...positionStyle
+                        };
+
+                        const overlayImage =
+                          overlayMeta.kind === "text"
+                            ? resolveOverlayImage(overlayConfig, null)
+                            : resolveOverlayImage(overlayConfig, overlayMeta.name || overlayName);
+
+                        const scaleWidth = parsePercentValue(overlayConfig.scale_width, POSTER_BASE.width);
+                        const scaleHeight = parsePercentValue(overlayConfig.scale_height, POSTER_BASE.height);
+                        const imageStyle: CSSProperties = {};
+                        if (scaleWidth > 0) {
+                          imageStyle.width = `${scaleWidth * overlayScale}px`;
+                        }
+                        if (scaleHeight > 0) {
+                          imageStyle.height = `${scaleHeight * overlayScale}px`;
+                        }
+                        if (scaleWidth === 0 && scaleHeight === 0 && overlayScale !== 1) {
+                          imageStyle.transform = `scale(${overlayScale})`;
+                          imageStyle.transformOrigin = "top left";
+                        }
+
+                        if (overlayMeta.kind === "image") {
+                          return (
+                            <div key={`${poster.id}-${overlayName}`} className="overlay-render" style={baseStyle}>
+                              {overlayImage ? (
+                                <img
+                                  src={overlayImage}
+                                  alt={overlayName}
+                                  style={imageStyle}
+                                  className="overlay-image"
+                                />
+                              ) : (
+                                <div className="overlay-fallback">{overlayMeta.name || overlayName}</div>
+                              )}
+                            </div>
+                          );
+                        }
+
+                        if (overlayMeta.kind === "backdrop") {
+                          const backWidth = parsePercentValue(overlayConfig.back_width, POSTER_BASE.width);
+                          const backHeight = parsePercentValue(overlayConfig.back_height, POSTER_BASE.height);
+                          const backdropStyle: CSSProperties = {
+                            width: backWidth ? `${backWidth * overlayScale}px` : "100%",
+                            height: backHeight ? `${backHeight * overlayScale}px` : "100%",
+                            background: String(overlayConfig.back_color ?? "rgba(0, 0, 0, 0.4)"),
+                            borderRadius: `${(parseNumeric(overlayConfig.back_radius) ?? 0) * overlayScale}px`,
+                            border:
+                              overlayConfig.back_line_width || overlayConfig.back_line_color
+                                ? `${(parseNumeric(overlayConfig.back_line_width) ?? 1) * overlayScale}px solid ${
+                                    String(overlayConfig.back_line_color ?? "rgba(255,255,255,0.4)")
+                                  }`
+                                : undefined
+                          };
+                          return (
+                            <div key={`${poster.id}-${overlayName}`} className="overlay-render" style={baseStyle}>
+                              <div className="overlay-backdrop" style={backdropStyle} />
+                            </div>
+                          );
+                        }
+
+                        if (overlayMeta.kind === "blur") {
+                          const blurAmount = parseNumeric(overlayMeta.blur) ?? 20;
+                          return (
+                            <div key={`${poster.id}-${overlayName}`} className="overlay-render" style={baseStyle}>
+                              <div
+                                className="overlay-blur"
+                                style={{
+                                  width: "100%",
+                                  height: "100%",
+                                  backdropFilter: `blur(${blurAmount}px)`,
+                                  background: "rgba(0,0,0,0.15)"
+                                }}
+                              />
+                            </div>
+                          );
+                        }
+
+                        const fontSize = (parseNumeric(overlayConfig.font_size) ?? 60) * overlayScale;
+                        const fontColor = String(overlayConfig.font_color ?? "#FFFFFF");
+                        const fontStyleValue =
+                          typeof overlayConfig.font_style === "string" ? overlayConfig.font_style.toLowerCase() : "";
+                        const fontFamily = typeof overlayConfig.font === "string" ? overlayConfig.font : "Space Grotesk";
+                        const strokeWidth = (parseNumeric(overlayConfig.stroke_width) ?? 0) * overlayScale;
+                        const strokeColor = String(overlayConfig.stroke_color ?? "#000000");
+                        const backPadding = (parseNumeric(overlayConfig.back_padding) ?? 0) * overlayScale;
+                        const backRadius = (parseNumeric(overlayConfig.back_radius) ?? 0) * overlayScale;
+                        const backWidth = parsePercentValue(overlayConfig.back_width, POSTER_BASE.width);
+                        const backHeight = parsePercentValue(overlayConfig.back_height, POSTER_BASE.height);
+                        const backLineWidth = (parseNumeric(overlayConfig.back_line_width) ?? 0) * overlayScale;
+                        const backLineColor = String(overlayConfig.back_line_color ?? "#FFFFFF");
+                        const addonOffset = (parseNumeric(overlayConfig.addon_offset) ?? 0) * overlayScale;
+                        const addonPosition =
+                          typeof overlayConfig.addon_position === "string" ? overlayConfig.addon_position : "left";
+
+                        const backAlign =
+                          typeof overlayConfig.back_align === "string" ? overlayConfig.back_align : "center";
+                        const alignItems =
+                          backAlign === "left"
+                            ? "flex-start"
+                            : backAlign === "right"
+                              ? "flex-end"
+                              : "center";
+                        const justifyContent =
+                          backAlign === "top"
+                            ? "flex-start"
+                            : backAlign === "bottom"
+                              ? "flex-end"
+                              : "center";
+
+                        const textStyle: CSSProperties = {
+                          fontSize: `${fontSize}px`,
+                          color: fontColor,
+                          fontFamily,
+                          fontStyle: fontStyleValue.includes("italic") ? "italic" : "normal",
+                          fontWeight: fontStyleValue.includes("bold") ? 700 : 500,
+                          background: overlayConfig.back_color ? String(overlayConfig.back_color) : "transparent",
+                          padding: backPadding ? `${backPadding}px` : "0px",
+                          borderRadius: backRadius ? `${backRadius}px` : "0px",
+                          border:
+                            backLineWidth || overlayConfig.back_line_color
+                              ? `${backLineWidth || 1}px solid ${backLineColor}`
+                              : undefined,
+                          width: backWidth ? `${backWidth * overlayScale}px` : "auto",
+                          height: backHeight ? `${backHeight * overlayScale}px` : "auto",
+                          display: "inline-flex",
+                          alignItems,
+                          justifyContent,
+                          gap: addonOffset ? `${addonOffset}px` : "6px",
+                          textAlign: "center"
+                        };
+
+                        if (strokeWidth > 0) {
+                          textStyle.WebkitTextStroke = `${strokeWidth}px ${strokeColor}`;
+                        }
+
+                        const flexDirection =
+                          addonPosition === "right"
+                            ? "row"
+                            : addonPosition === "left"
+                              ? "row-reverse"
+                              : addonPosition === "top"
+                                ? "column-reverse"
+                                : "column";
+
+                        return (
+                          <div key={`${poster.id}-${overlayName}`} className="overlay-render" style={baseStyle}>
+                            <div className="overlay-text" style={{ ...textStyle, flexDirection }}>
+                              {overlayImage && (
+                                <img
+                                  src={overlayImage}
+                                  alt="addon"
+                                  className="overlay-addon"
+                                  style={imageStyle}
+                                />
+                              )}
+                              <span>{overlayMeta.text || overlayName}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                  <p className="poster-caption">{poster.label}</p>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="section">
+            <h3>Overlay snippet</h3>
+            <pre className="code-block">{overlaySnippet}</pre>
+            <p className="hint">Snippet reflects the overlays selected above.</p>
+          </div>
+        </div>
+
+        <div className="overlay-controls">
+          <div className="section">
+            <div className="section-header">
+              <h3>Overlay choices</h3>
+              {overlayNames.length > 0 && (
+                <button
+                  className="ghost small"
+                  onClick={() =>
+                    setOverlayPreviewSelection((prev) => {
+                      const next: Record<string, boolean> = {};
+                      overlayNames.forEach((name) => {
+                        next[name] = !allOverlaysSelected;
+                      });
+                      return next;
+                    })
+                  }
+                >
+                  {allOverlaysSelected ? "Clear all" : "Select all"}
+                </button>
+              )}
+            </div>
+            <div className="overlay-list">
+              {overlayNames.map((name) => (
+                <label key={name} className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={overlayPreviewSelection[name] ?? true}
+                    onChange={() =>
+                      setOverlayPreviewSelection((prev) => ({
+                        ...prev,
+                        [name]: !(prev[name] ?? true)
+                      }))
+                    }
+                  />
+                  {name}
+                </label>
+              ))}
+              {!overlayNames.length && <p className="hint">No overlays defined yet.</p>}
+            </div>
+          </div>
+
+          <div className="section">
+            <h3>Poster source</h3>
+            <div className="segmented">
+              <button
+                className={posterMode === "sample" ? "active" : ""}
+                onClick={() => setPosterMode("sample")}
+              >
+                PosterDB samples
+              </button>
+              <button
+                className={posterMode === "asset" ? "active" : ""}
+                onClick={() => setPosterMode("asset")}
+                disabled={!assetPosters.length}
+              >
+                From assets
+              </button>
+            </div>
+            {posterMode === "sample" && (
+              <select
+                className="input select"
+                value={posterSampleId}
+                onChange={(event) => setPosterSampleId(event.target.value)}
+              >
+                {SAMPLE_POSTERS.map((poster) => (
+                  <option key={poster.id} value={poster.id}>
+                    {poster.label}
+                  </option>
+                ))}
+              </select>
+            )}
+            {posterMode === "asset" && (
+              <select
+                className="input select"
+                value={posterAssetPath}
+                onChange={(event) => setPosterAssetPath(event.target.value)}
+              >
+                <option value="">Select an asset poster</option>
+                {assetPosters.map((poster) => (
+                  <option key={poster.path} value={poster.path}>
+                    {poster.path}
+                  </option>
+                ))}
+              </select>
+            )}
+            <p className="hint">Samples are cached in /data/posters.</p>
+          </div>
+
+          <div className="section">
+            <h3>Kometa preview</h3>
+            <div className="field-row">
+              <button
+                className="primary"
+                onClick={handleKometaPreview}
+                disabled={
+                  kometaPreviewLoading ||
+                  !Object.keys(overlaysMap).length ||
+                  (posterMode === "asset" && !posterAssetPath) ||
+                  overlayValidationIssues.length > 0
+                }
+              >
+                {kometaPreviewLoading ? "Rendering..." : "Render with Kometa"}
+              </button>
+              {kometaPreviewUrl && (
+                <button className="ghost" onClick={handleClearKometaPreview}>
+                  Clear
+                </button>
+              )}
+            </div>
+            {overlayValidationIssues.length > 0 && (
+              <div className="hint error">
+                <p>Fix these before rendering:</p>
+                <ul>
+                  {overlayValidationIssues.map((issue) => (
+                    <li key={issue}>{issue}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {kometaPreviewError && <p className="hint error">{kometaPreviewError}</p>}
+            <p className="hint">Runs Kometa inside the container for accurate overlay output.</p>
+          </div>
+
+          <div className="section">
+            <h3>Default overlays catalog</h3>
+            <input
+              className="input"
+              value={defaultOverlayQuery}
+              onChange={(event) => setDefaultOverlayQuery(event.target.value)}
+              placeholder="Search defaults (ex: 4k, imdb, hdr)"
+            />
+            <div className="overlay-catalog">
+              {filteredDefaultOverlays.map((asset) => (
+                <div key={asset.path} className="overlay-catalog-card">
+                  <img
+                    src={`/api/files/raw?path=${encodeURIComponent(asset.path)}`}
+                    alt={asset.path}
+                  />
+                  <div className="overlay-catalog-meta">
+                    <span>{asset.path.replace(".kometa-ui/defaults/overlays/images/", "")}</span>
+                    <button className="ghost small" onClick={() => handleDefaultOverlayAdd(asset.path)}>
+                      Add
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {!filteredDefaultOverlays.length && <p className="hint">No default overlays found.</p>}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 
   return (
@@ -2731,640 +3135,724 @@ export default function Config() {
       )}
 
       {fileType === "overlays" && (
-        <div className="grid two">
-          <div className="card builder">
-            <div className="card-header">
-              <div>
-                <h2>Overlays builder</h2>
-                <p className="hint">Design overlay definitions and search rules.</p>
+        <div className="grid two overlay-editor">
+          <div className="stack">
+            <div className="card builder">
+              <div className="card-header">
+                <div>
+                  <h2>Overlays builder</h2>
+                  <p className="hint">Design overlay definitions and search rules.</p>
+                </div>
+                <button className="ghost" onClick={handleSyncFromYaml}>
+                  Sync from YAML
+                </button>
               </div>
-              <button className="ghost" onClick={handleSyncFromYaml}>
-                Sync from YAML
-              </button>
-            </div>
-            {fileParseError && <div className="banner error">{fileParseError}</div>}
-            <div className="field-row">
-              <input
-                className="input"
-                value={overlayNameInput}
-                onChange={(event) => setOverlayNameInput(event.target.value)}
-                placeholder="New overlay name"
-              />
-              <button className="primary" onClick={handleOverlayAdd}>
-                Add overlay
-              </button>
-            </div>
-            <div className="collection-list">
-              {Object.entries(overlaysMap).map(([name, overlay]) => {
-                const entry = isRecord(overlay) ? overlay : {};
-                const overlayConfig = getOverlayConfig(entry);
-                const overlayMeta = parseOverlayName(overlayConfig.name);
-                const overlayType = overlayMeta.kind;
-                const overlayText = overlayMeta.kind === "text" ? overlayMeta.text ?? "" : "";
-                const overlayBlur = overlayMeta.kind === "blur" ? overlayMeta.blur ?? 50 : 50;
-                const plexSearch = isRecord(entry.plex_search)
-                  ? (entry.plex_search as Record<string, unknown>)
-                  : {};
-                const plexAll = isRecord(plexSearch.all) ? (plexSearch.all as Record<string, unknown>) : {};
-                const searchEntries = Object.entries(plexAll).filter(
-                  ([key]) => !OVERLAY_SEARCH_FIELDS.has(key)
-                );
-                const searchInput = overlaySearchInputs[name] ?? { key: "", value: "" };
-                const extraEntries = Object.entries(overlayConfig).filter(
-                  ([key]) => !OVERLAY_BLOCK_FIELDS.has(key)
-                );
-                const extraInput = overlayAttributeInputs[name] ?? { key: "", value: "" };
-                return (
-                  <div key={name} className="collection-card">
-                    <div className="collection-header">
-                      <input
-                        className="input title"
-                        defaultValue={name}
-                        onBlur={(event) => handleOverlayRename(name, event.target.value)}
-                      />
-                      <button className="ghost" onClick={() => handleOverlayRemove(name)}>
-                        Remove
-                      </button>
-                    </div>
-                    <div className="field-grid">
-                      <label className="field">
-                        <span>Overlay type</span>
-                        <select
-                          className="input select"
-                          value={overlayType}
-                          onChange={(event) => {
-                            const value = event.target.value;
-                            if (value === "text") {
-                              handleOverlayNestedField(name, "overlay", "name", `text(${overlayText || "Text"})`);
-                            } else if (value === "blur") {
-                              handleOverlayNestedField(name, "overlay", "name", `blur(${overlayBlur || 50})`);
-                            } else if (value === "backdrop") {
-                              handleOverlayNestedField(name, "overlay", "name", "backdrop");
-                            } else {
-                              handleOverlayNestedField(name, "overlay", "name", overlayMeta.name || name);
-                            }
-                          }}
-                        >
-                          <option value="image">Image</option>
-                          <option value="text">Text</option>
-                          <option value="backdrop">Backdrop</option>
-                          <option value="blur">Blur</option>
-                        </select>
-                      </label>
-                      <label className="field">
-                        <span>Overlay name</span>
+              {fileParseError && <div className="banner error">{fileParseError}</div>}
+              <div className="field-row">
+                <input
+                  className="input"
+                  value={overlayNameInput}
+                  onChange={(event) => setOverlayNameInput(event.target.value)}
+                  placeholder="New overlay name"
+                />
+                <button className="primary" onClick={handleOverlayAdd}>
+                  Add overlay
+                </button>
+              </div>
+              <div className="collection-list">
+                {Object.entries(overlaysMap).map(([name, overlay]) => {
+                  const entry = isRecord(overlay) ? overlay : {};
+                  const overlayConfig = getOverlayConfig(entry);
+                  const overlayMeta = parseOverlayName(overlayConfig.name);
+                  const overlayType = overlayMeta.kind;
+                  const overlayText = overlayMeta.kind === "text" ? overlayMeta.text ?? "" : "";
+                  const overlayBlur = overlayMeta.kind === "blur" ? overlayMeta.blur ?? 50 : 50;
+                  const backAlign = typeof overlayConfig.back_align === "string" ? overlayConfig.back_align.trim() : "";
+                  const backAlignNeedsWidth =
+                    backAlign !== "" && backAlign !== "center" && !hasMeaningfulValue(overlayConfig.back_width);
+                  const plexSearch = isRecord(entry.plex_search)
+                    ? (entry.plex_search as Record<string, unknown>)
+                    : {};
+                  const plexAll = isRecord(plexSearch.all) ? (plexSearch.all as Record<string, unknown>) : {};
+                  const searchEntries = Object.entries(plexAll).filter(
+                    ([key]) => !OVERLAY_SEARCH_FIELDS.has(key)
+                  );
+                  const searchInput = overlaySearchInputs[name] ?? { key: "", value: "" };
+                  const extraEntries = Object.entries(overlayConfig).filter(
+                    ([key]) => !OVERLAY_BLOCK_FIELDS.has(key)
+                  );
+                  const extraInput = overlayAttributeInputs[name] ?? { key: "", value: "" };
+                  return (
+                    <div key={name} className="collection-card">
+                      <div className="collection-header">
                         <input
-                          className="input"
-                          value={overlayMeta.name ?? ""}
-                          onChange={(event) =>
-                            handleOverlayNestedField(name, "overlay", "name", event.target.value)
-                          }
-                          placeholder="IMDB-Top-250"
-                          disabled={overlayType !== "image"}
+                          className="input title"
+                          defaultValue={name}
+                          onBlur={(event) => handleOverlayRename(name, event.target.value)}
                         />
-                      </label>
-                      <label className="field">
-                        <span>Overlay text</span>
-                        <input
-                          className="input"
-                          value={overlayText}
-                          onChange={(event) =>
-                            handleOverlayNestedField(name, "overlay", "name", `text(${event.target.value})`)
-                          }
-                          placeholder="Direct Play"
-                          disabled={overlayType !== "text"}
-                        />
-                      </label>
-                      <label className="field">
-                        <span>Blur strength</span>
-                        <input
-                          className="input"
-                          value={overlayBlur}
-                          onChange={(event) =>
-                            handleOverlayNestedField(name, "overlay", "name", `blur(${event.target.value})`)
-                          }
-                          placeholder="50"
-                          disabled={overlayType !== "blur"}
-                        />
-                      </label>
-                    </div>
-                    <div className="form-block">
-                      <h3>Image sources</h3>
-                      <div className="field-grid">
-                        <label className="field">
-                          <span>Default image</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.default)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(name, "overlay", "default", event.target.value)
-                            }
-                            placeholder="ribbon/yellow/imdb.png"
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Image file</span>
-                          <input
-                            className="input"
-                            list={`overlay-files-${name}`}
-                            value={stringifyValue(overlayConfig.file)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(name, "overlay", "file", event.target.value)
-                            }
-                            placeholder="overlays/4K.png"
-                          />
-                          <datalist id={`overlay-files-${name}`}>
-                            {overlayImages.map((file) => (
-                              <option key={file.path} value={file.path} />
-                            ))}
-                          </datalist>
-                        </label>
-                        <label className="field">
-                          <span>Image URL</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.url)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(name, "overlay", "url", event.target.value)
-                            }
-                            placeholder="https://..."
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Git path</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.git)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(name, "overlay", "git", event.target.value)
-                            }
-                            placeholder="overlays/4K.png"
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Repo path</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.repo)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(name, "overlay", "repo", event.target.value)
-                            }
-                            placeholder="overlays/4K.png"
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Scale width</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.scale_width)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(
-                                name,
-                                "overlay",
-                                "scale_width",
-                                parseValueInput(event.target.value)
-                              )
-                            }
-                            placeholder="300 or 20%"
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Scale height</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.scale_height)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(
-                                name,
-                                "overlay",
-                                "scale_height",
-                                parseValueInput(event.target.value)
-                              )
-                            }
-                            placeholder="120 or 10%"
-                          />
-                        </label>
+                        <button className="ghost" onClick={() => handleOverlayRemove(name)}>
+                          Remove
+                        </button>
                       </div>
-                    </div>
-                    <div className="form-block">
-                      <h3>Text styling</h3>
                       <div className="field-grid">
                         <label className="field">
-                          <span>Font</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.font)}
-                            onChange={(event) => handleOverlayNestedField(name, "overlay", "font", event.target.value)}
-                            placeholder="fonts/Inter-Medium.ttf"
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Font style</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.font_style)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(name, "overlay", "font_style", event.target.value)
-                            }
-                            placeholder="italic, bold"
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Font size</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.font_size)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(
-                                name,
-                                "overlay",
-                                "font_size",
-                                parseValueInput(event.target.value)
-                              )
-                            }
-                            placeholder="63"
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Font color</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.font_color)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(name, "overlay", "font_color", event.target.value)
-                            }
-                            placeholder="#FFFFFF"
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Stroke color</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.stroke_color)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(name, "overlay", "stroke_color", event.target.value)
-                            }
-                            placeholder="#000000"
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Stroke width</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.stroke_width)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(
-                                name,
-                                "overlay",
-                                "stroke_width",
-                                parseValueInput(event.target.value)
-                              )
-                            }
-                            placeholder="2"
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Backdrop color</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.back_color)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(name, "overlay", "back_color", event.target.value)
-                            }
-                            placeholder="#00000099"
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Backdrop align</span>
+                          <span>Overlay type</span>
                           <select
                             className="input select"
-                            value={stringifyValue(overlayConfig.back_align)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(name, "overlay", "back_align", event.target.value)
-                            }
+                            value={overlayType}
+                            onChange={(event) => {
+                              const value = event.target.value;
+                              if (value === "text") {
+                                handleOverlayNestedField(name, "overlay", "name", `text(${overlayText || "Text"})`);
+                              } else if (value === "blur") {
+                                handleOverlayNestedField(name, "overlay", "name", `blur(${overlayBlur || 50})`);
+                              } else if (value === "backdrop") {
+                                handleOverlayNestedField(name, "overlay", "name", "backdrop");
+                              } else {
+                                handleOverlayNestedField(name, "overlay", "name", overlayMeta.name || name);
+                              }
+                            }}
                           >
-                            <option value="">Choose</option>
-                            <option value="left">left</option>
-                            <option value="center">center</option>
-                            <option value="right">right</option>
-                            <option value="top">top</option>
-                            <option value="bottom">bottom</option>
+                            <option value="image">Image</option>
+                            <option value="text">Text</option>
+                            <option value="backdrop">Backdrop</option>
+                            <option value="blur">Blur</option>
                           </select>
                         </label>
                         <label className="field">
-                          <span>Backdrop width</span>
+                          <span>Overlay name</span>
                           <input
                             className="input"
-                            value={stringifyValue(overlayConfig.back_width)}
+                            value={overlayMeta.name ?? ""}
                             onChange={(event) =>
-                              handleOverlayNestedField(
-                                name,
-                                "overlay",
-                                "back_width",
-                                parseValueInput(event.target.value)
-                              )
+                              handleOverlayNestedField(name, "overlay", "name", event.target.value)
                             }
-                            placeholder="300"
+                            placeholder="IMDB-Top-250"
+                            disabled={overlayType !== "image"}
                           />
                         </label>
                         <label className="field">
-                          <span>Backdrop height</span>
+                          <span>Overlay text</span>
                           <input
                             className="input"
-                            value={stringifyValue(overlayConfig.back_height)}
+                            value={overlayText}
                             onChange={(event) =>
-                              handleOverlayNestedField(
-                                name,
-                                "overlay",
-                                "back_height",
-                                parseValueInput(event.target.value)
-                              )
+                              handleOverlayNestedField(name, "overlay", "name", `text(${event.target.value})`)
                             }
-                            placeholder="100"
+                            placeholder="Direct Play"
+                            disabled={overlayType !== "text"}
                           />
                         </label>
                         <label className="field">
-                          <span>Backdrop padding</span>
+                          <span>Blur strength</span>
                           <input
                             className="input"
-                            value={stringifyValue(overlayConfig.back_padding)}
+                            value={overlayBlur}
                             onChange={(event) =>
-                              handleOverlayNestedField(
-                                name,
-                                "overlay",
-                                "back_padding",
-                                parseValueInput(event.target.value)
-                              )
+                              handleOverlayNestedField(name, "overlay", "name", `blur(${event.target.value})`)
                             }
-                            placeholder="30"
+                            placeholder="50"
+                            disabled={overlayType !== "blur"}
                           />
-                        </label>
-                        <label className="field">
-                          <span>Backdrop radius</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.back_radius)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(
-                                name,
-                                "overlay",
-                                "back_radius",
-                                parseValueInput(event.target.value)
-                              )
-                            }
-                            placeholder="30"
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Backdrop line color</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.back_line_color)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(name, "overlay", "back_line_color", event.target.value)
-                            }
-                            placeholder="#FFFFFF"
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Backdrop line width</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.back_line_width)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(
-                                name,
-                                "overlay",
-                                "back_line_width",
-                                parseValueInput(event.target.value)
-                              )
-                            }
-                            placeholder="2"
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Addon position</span>
-                          <select
-                            className="input select"
-                            value={stringifyValue(overlayConfig.addon_position)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(name, "overlay", "addon_position", event.target.value)
-                            }
-                          >
-                            <option value="">Choose</option>
-                            <option value="left">left</option>
-                            <option value="right">right</option>
-                            <option value="top">top</option>
-                            <option value="bottom">bottom</option>
-                          </select>
-                        </label>
-                        <label className="field">
-                          <span>Addon offset</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.addon_offset)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(
-                                name,
-                                "overlay",
-                                "addon_offset",
-                                parseValueInput(event.target.value)
-                              )
-                            }
-                            placeholder="25"
-                          />
-                        </label>
-                      </div>
-                    </div>
-                    <div className="form-block">
-                      <h3>Position</h3>
-                      <div className="field-grid">
-                        <label className="field">
-                          <span>Horizontal align</span>
-                          <select
-                            className="input select"
-                            value={stringifyValue(overlayConfig.horizontal_align)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(name, "overlay", "horizontal_align", event.target.value)
-                            }
-                          >
-                            <option value="">Choose</option>
-                            <option value="left">left</option>
-                            <option value="center">center</option>
-                            <option value="right">right</option>
-                          </select>
-                        </label>
-                        <label className="field">
-                          <span>Vertical align</span>
-                          <select
-                            className="input select"
-                            value={stringifyValue(overlayConfig.vertical_align)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(name, "overlay", "vertical_align", event.target.value)
-                            }
-                          >
-                            <option value="">Choose</option>
-                            <option value="top">top</option>
-                            <option value="center">center</option>
-                            <option value="bottom">bottom</option>
-                          </select>
-                        </label>
-                        <label className="field">
-                          <span>Horizontal offset</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.horizontal_offset)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(
-                                name,
-                                "overlay",
-                                "horizontal_offset",
-                                parseValueInput(event.target.value)
-                              )
-                            }
-                            placeholder="0 or 10%"
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Vertical offset</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.vertical_offset)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(
-                                name,
-                                "overlay",
-                                "vertical_offset",
-                                parseValueInput(event.target.value)
-                              )
-                            }
-                            placeholder="150 or 10%"
-                          />
-                        </label>
-                      </div>
-                    </div>
-                    <div className="form-block">
-                      <h3>Grouping & queue</h3>
-                      <div className="field-grid">
-                        <label className="field">
-                          <span>Group</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.group)}
-                            onChange={(event) => handleOverlayNestedField(name, "overlay", "group", event.target.value)}
-                            placeholder="audio_language"
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Queue</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.queue)}
-                            onChange={(event) => handleOverlayNestedField(name, "overlay", "queue", event.target.value)}
-                            placeholder="custom_queue"
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Weight</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(overlayConfig.weight)}
-                            onChange={(event) =>
-                              handleOverlayNestedField(
-                                name,
-                                "overlay",
-                                "weight",
-                                parseValueInput(event.target.value)
-                              )
-                            }
-                            placeholder="10"
-                          />
-                        </label>
-                        <label className="field">
-                          <span>Builder level</span>
-                          <select
-                            className="input select"
-                            value={stringifyValue(entry.builder_level)}
-                            onChange={(event) => handleOverlayField(name, "builder_level", event.target.value)}
-                          >
-                            <option value="">Choose</option>
-                            <option value="show">show</option>
-                            <option value="season">season</option>
-                            <option value="episode">episode</option>
-                          </select>
-                        </label>
-                        <label className="field">
-                          <span>Suppress overlays</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(entry.suppress_overlays)}
-                            onChange={(event) =>
-                              handleOverlayField(name, "suppress_overlays", parseValueInput(event.target.value))
-                            }
-                            placeholder="4K, HDR"
-                          />
-                        </label>
-                      </div>
-                    </div>
-                    <div className="form-block">
-                      <h3>Plex search</h3>
-                      <div className="field-grid">
-                        <label className="field">
-                          <span>Plex all</span>
-                          <div className="toggle">
-                            <input
-                              type="checkbox"
-                              checked={Boolean(entry.plex_all)}
-                              onChange={(event) => handleOverlayField(name, "plex_all", event.target.checked)}
-                            />
-                            <span>{entry.plex_all ? "On" : "Off"}</span>
-                          </div>
-                        </label>
-                        <label className="field">
-                          <span>Resolution</span>
-                          <input
-                            className="input"
-                            value={stringifyValue(plexAll.resolution)}
-                            onChange={(event) =>
-                              handleOverlaySearchField(name, "resolution", event.target.value)
-                            }
-                            placeholder="4K"
-                          />
-                        </label>
-                        <label className="field">
-                          <span>HDR only</span>
-                          <div className="toggle">
-                            <input
-                              type="checkbox"
-                              checked={Boolean(plexAll.hdr)}
-                              onChange={(event) => handleOverlaySearchField(name, "hdr", event.target.checked)}
-                            />
-                            <span>{plexAll.hdr ? "On" : "Off"}</span>
-                          </div>
                         </label>
                       </div>
                       <div className="form-block">
-                        <h3>Additional search filters</h3>
+                        <h3>Image sources</h3>
+                        <p className="hint">Choose one image source per overlay.</p>
+                        <div className="field-grid">
+                          <label className="field">
+                            <span>Default image</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.default)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(name, "overlay", "default", event.target.value)
+                              }
+                              placeholder="ribbon/yellow/imdb.png"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Image file</span>
+                            <input
+                              className="input"
+                              list={`overlay-files-${name}`}
+                              value={stringifyValue(overlayConfig.file)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(name, "overlay", "file", event.target.value)
+                              }
+                              placeholder="overlays/4K.png"
+                            />
+                            <datalist id={`overlay-files-${name}`}>
+                              {overlayImages.map((file) => (
+                                <option key={file.path} value={file.path} />
+                              ))}
+                            </datalist>
+                          </label>
+                          <label className="field">
+                            <span>Image URL</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.url)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(name, "overlay", "url", event.target.value)
+                              }
+                              placeholder="https://..."
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Git path</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.git)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(name, "overlay", "git", event.target.value)
+                              }
+                              placeholder="overlays/4K.png"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Repo path</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.repo)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(name, "overlay", "repo", event.target.value)
+                              }
+                              placeholder="overlays/4K.png"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Scale width</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.scale_width)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(
+                                  name,
+                                  "overlay",
+                                  "scale_width",
+                                  parseValueInput(event.target.value)
+                                )
+                              }
+                              placeholder="300 or 20%"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Scale height</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.scale_height)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(
+                                  name,
+                                  "overlay",
+                                  "scale_height",
+                                  parseValueInput(event.target.value)
+                                )
+                              }
+                              placeholder="120 or 10%"
+                            />
+                          </label>
+                        </div>
+                      </div>
+                      <details className="form-block collapsible" open>
+                        <summary>Text styling</summary>
+                        <p className="hint">Fonts, colors, and backdrop settings for text overlays.</p>
+                        <div className="field-grid">
+                          <label className="field">
+                            <span>Font</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.font)}
+                              onChange={(event) => handleOverlayNestedField(name, "overlay", "font", event.target.value)}
+                              placeholder="fonts/Inter-Medium.ttf"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Font style</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.font_style)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(name, "overlay", "font_style", event.target.value)
+                              }
+                              placeholder="italic, bold"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Font size</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.font_size)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(
+                                  name,
+                                  "overlay",
+                                  "font_size",
+                                  parseValueInput(event.target.value)
+                                )
+                              }
+                              placeholder="63"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Font color</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.font_color)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(name, "overlay", "font_color", event.target.value)
+                              }
+                              placeholder="#FFFFFF"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Stroke color</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.stroke_color)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(name, "overlay", "stroke_color", event.target.value)
+                              }
+                              placeholder="#000000"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Stroke width</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.stroke_width)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(
+                                  name,
+                                  "overlay",
+                                  "stroke_width",
+                                  parseValueInput(event.target.value)
+                                )
+                              }
+                              placeholder="2"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Backdrop color</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.back_color)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(name, "overlay", "back_color", event.target.value)
+                              }
+                              placeholder="#00000099"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Backdrop align</span>
+                            <select
+                              className="input select"
+                              value={stringifyValue(overlayConfig.back_align)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(name, "overlay", "back_align", event.target.value)
+                              }
+                            >
+                              <option value="">Choose</option>
+                              <option value="left">left</option>
+                              <option value="center">center</option>
+                              <option value="right">right</option>
+                              <option value="top">top</option>
+                              <option value="bottom">bottom</option>
+                            </select>
+                            {backAlignNeedsWidth && (
+                              <small className="hint error">Set backdrop width to use non-center alignments.</small>
+                            )}
+                          </label>
+                          <label className="field">
+                            <span>Backdrop width</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.back_width)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(
+                                  name,
+                                  "overlay",
+                                  "back_width",
+                                  parseValueInput(event.target.value)
+                                )
+                              }
+                              placeholder="300"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Backdrop height</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.back_height)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(
+                                  name,
+                                  "overlay",
+                                  "back_height",
+                                  parseValueInput(event.target.value)
+                                )
+                              }
+                              placeholder="100"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Backdrop padding</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.back_padding)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(
+                                  name,
+                                  "overlay",
+                                  "back_padding",
+                                  parseValueInput(event.target.value)
+                                )
+                              }
+                              placeholder="30"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Backdrop radius</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.back_radius)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(
+                                  name,
+                                  "overlay",
+                                  "back_radius",
+                                  parseValueInput(event.target.value)
+                                )
+                              }
+                              placeholder="30"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Backdrop line color</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.back_line_color)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(name, "overlay", "back_line_color", event.target.value)
+                              }
+                              placeholder="#FFFFFF"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Backdrop line width</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.back_line_width)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(
+                                  name,
+                                  "overlay",
+                                  "back_line_width",
+                                  parseValueInput(event.target.value)
+                                )
+                              }
+                              placeholder="2"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Addon position</span>
+                            <select
+                              className="input select"
+                              value={stringifyValue(overlayConfig.addon_position)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(name, "overlay", "addon_position", event.target.value)
+                              }
+                            >
+                              <option value="">Choose</option>
+                              <option value="left">left</option>
+                              <option value="right">right</option>
+                              <option value="top">top</option>
+                              <option value="bottom">bottom</option>
+                            </select>
+                          </label>
+                          <label className="field">
+                            <span>Addon offset</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.addon_offset)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(
+                                  name,
+                                  "overlay",
+                                  "addon_offset",
+                                  parseValueInput(event.target.value)
+                                )
+                              }
+                              placeholder="25"
+                            />
+                          </label>
+                        </div>
+                      </details>
+                      <details className="form-block collapsible" open>
+                        <summary>Position</summary>
+                        <p className="hint">Alignment and offsets relative to the 1000x1500 poster.</p>
+                        <div className="field-grid">
+                          <label className="field">
+                            <span>Horizontal align</span>
+                            <select
+                              className="input select"
+                              value={stringifyValue(overlayConfig.horizontal_align)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(name, "overlay", "horizontal_align", event.target.value)
+                              }
+                            >
+                              <option value="">Choose</option>
+                              <option value="left">left</option>
+                              <option value="center">center</option>
+                              <option value="right">right</option>
+                            </select>
+                          </label>
+                          <label className="field">
+                            <span>Vertical align</span>
+                            <select
+                              className="input select"
+                              value={stringifyValue(overlayConfig.vertical_align)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(name, "overlay", "vertical_align", event.target.value)
+                              }
+                            >
+                              <option value="">Choose</option>
+                              <option value="top">top</option>
+                              <option value="center">center</option>
+                              <option value="bottom">bottom</option>
+                            </select>
+                          </label>
+                          <label className="field">
+                            <span>Horizontal offset</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.horizontal_offset)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(
+                                  name,
+                                  "overlay",
+                                  "horizontal_offset",
+                                  parseValueInput(event.target.value)
+                                )
+                              }
+                              placeholder="0 or 10%"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Vertical offset</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.vertical_offset)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(
+                                  name,
+                                  "overlay",
+                                  "vertical_offset",
+                                  parseValueInput(event.target.value)
+                                )
+                              }
+                              placeholder="150 or 10%"
+                            />
+                          </label>
+                        </div>
+                      </details>
+                      <details className="form-block collapsible">
+                        <summary>Grouping & queue</summary>
+                        <p className="hint">Use groups and queues to resolve conflicts and order.</p>
+                        <div className="field-grid">
+                          <label className="field">
+                            <span>Group</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.group)}
+                              onChange={(event) => handleOverlayNestedField(name, "overlay", "group", event.target.value)}
+                              placeholder="audio_language"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Queue</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.queue)}
+                              onChange={(event) => handleOverlayNestedField(name, "overlay", "queue", event.target.value)}
+                              placeholder="custom_queue"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Weight</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(overlayConfig.weight)}
+                              onChange={(event) =>
+                                handleOverlayNestedField(
+                                  name,
+                                  "overlay",
+                                  "weight",
+                                  parseValueInput(event.target.value)
+                                )
+                              }
+                              placeholder="10"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Builder level</span>
+                            <select
+                              className="input select"
+                              value={stringifyValue(entry.builder_level)}
+                              onChange={(event) => handleOverlayField(name, "builder_level", event.target.value)}
+                            >
+                              <option value="">Choose</option>
+                              <option value="show">show</option>
+                              <option value="season">season</option>
+                              <option value="episode">episode</option>
+                            </select>
+                          </label>
+                          <label className="field">
+                            <span>Suppress overlays</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(entry.suppress_overlays)}
+                              onChange={(event) =>
+                                handleOverlayField(name, "suppress_overlays", parseValueInput(event.target.value))
+                              }
+                              placeholder="4K, HDR"
+                            />
+                          </label>
+                        </div>
+                      </details>
+                      <details className="form-block collapsible">
+                        <summary>Plex search</summary>
+                        <p className="hint">Control which items receive this overlay.</p>
+                        <div className="field-grid">
+                          <label className="field">
+                            <span>Plex all</span>
+                            <div className="toggle">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(entry.plex_all)}
+                                onChange={(event) => handleOverlayField(name, "plex_all", event.target.checked)}
+                              />
+                              <span>{entry.plex_all ? "On" : "Off"}</span>
+                            </div>
+                          </label>
+                          <label className="field">
+                            <span>Resolution</span>
+                            <input
+                              className="input"
+                              value={stringifyValue(plexAll.resolution)}
+                              onChange={(event) =>
+                                handleOverlaySearchField(name, "resolution", event.target.value)
+                              }
+                              placeholder="4K"
+                            />
+                          </label>
+                          <label className="field">
+                            <span>HDR only</span>
+                            <div className="toggle">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(plexAll.hdr)}
+                                onChange={(event) => handleOverlaySearchField(name, "hdr", event.target.checked)}
+                              />
+                              <span>{plexAll.hdr ? "On" : "Off"}</span>
+                            </div>
+                          </label>
+                        </div>
+                        <div className="form-block">
+                          <h3>Additional search filters</h3>
+                          <div className="builder-fields">
+                            {searchEntries.map(([key, value]) => {
+                              const rendered = stringifyValue(value);
+                              const multiline = rendered.includes("\n");
+                              return (
+                                <div key={`${name}-search-${key}`} className="builder-row">
+                                  <input
+                                    className="input"
+                                    defaultValue={key}
+                                    onBlur={(event) =>
+                                      handleOverlaySearchRename(name, key, event.target.value)
+                                    }
+                                    placeholder="Search key"
+                                  />
+                                  {multiline ? (
+                                    <textarea
+                                      className="input"
+                                      value={rendered}
+                                      onChange={(event) =>
+                                        handleOverlaySearchField(name, key, parseValueInput(event.target.value))
+                                      }
+                                    />
+                                  ) : (
+                                    <input
+                                      className="input"
+                                      value={rendered}
+                                      onChange={(event) =>
+                                        handleOverlaySearchField(name, key, parseValueInput(event.target.value))
+                                      }
+                                    />
+                                  )}
+                                  <button
+                                    className="ghost"
+                                    onClick={() => handleOverlaySearchRemove(name, key)}
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                              );
+                            })}
+                            <div className="builder-row">
+                              <input
+                                className="input"
+                                value={searchInput.key}
+                                placeholder="Search key"
+                                onChange={(event) =>
+                                  handleOverlaySearchInput(name, event.target.value, searchInput.value)
+                                }
+                              />
+                              <input
+                                className="input"
+                                value={searchInput.value}
+                                placeholder="Value"
+                                onChange={(event) =>
+                                  handleOverlaySearchInput(name, searchInput.key, event.target.value)
+                                }
+                              />
+                              <button className="ghost" onClick={() => handleOverlaySearchAdd(name)}>
+                                Add
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </details>
+                      <details className="form-block collapsible">
+                        <summary>Extra overlay attributes</summary>
+                        <p className="hint">Add anything not covered by the UI.</p>
                         <div className="builder-fields">
-                          {searchEntries.map(([key, value]) => {
+                          {extraEntries.map(([key, value]) => {
                             const rendered = stringifyValue(value);
                             const multiline = rendered.includes("\n");
                             return (
-                              <div key={`${name}-search-${key}`} className="builder-row">
+                              <div key={`${name}-extra-${key}`} className="builder-row">
                                 <input
                                   className="input"
                                   defaultValue={key}
                                   onBlur={(event) =>
-                                    handleOverlaySearchRename(name, key, event.target.value)
+                                    handleOverlayAttributeRename(name, key, event.target.value)
                                   }
-                                  placeholder="Search key"
+                                  placeholder="Attribute key"
                                 />
                                 {multiline ? (
                                   <textarea
                                     className="input"
                                     value={rendered}
                                     onChange={(event) =>
-                                      handleOverlaySearchField(name, key, parseValueInput(event.target.value))
+                                      handleOverlayNestedField(
+                                        name,
+                                        "overlay",
+                                        key,
+                                        parseValueInput(event.target.value)
+                                      )
                                     }
                                   />
                                 ) : (
@@ -3372,13 +3860,18 @@ export default function Config() {
                                     className="input"
                                     value={rendered}
                                     onChange={(event) =>
-                                      handleOverlaySearchField(name, key, parseValueInput(event.target.value))
+                                      handleOverlayNestedField(
+                                        name,
+                                        "overlay",
+                                        key,
+                                        parseValueInput(event.target.value)
+                                      )
                                     }
                                   />
                                 )}
                                 <button
                                   className="ghost"
-                                  onClick={() => handleOverlaySearchRemove(name, key)}
+                                  onClick={() => handleOverlayAttributeRemove(name, key)}
                                 >
                                   Remove
                                 </button>
@@ -3388,495 +3881,53 @@ export default function Config() {
                           <div className="builder-row">
                             <input
                               className="input"
-                              value={searchInput.key}
-                              placeholder="Search key"
+                              value={extraInput.key}
+                              placeholder="Attribute key"
                               onChange={(event) =>
-                                handleOverlaySearchInput(name, event.target.value, searchInput.value)
+                                handleOverlayAttributeInput(name, event.target.value, extraInput.value)
                               }
                             />
                             <input
                               className="input"
-                              value={searchInput.value}
+                              value={extraInput.value}
                               placeholder="Value"
                               onChange={(event) =>
-                                handleOverlaySearchInput(name, searchInput.key, event.target.value)
+                                handleOverlayAttributeInput(name, extraInput.key, event.target.value)
                               }
                             />
-                            <button className="ghost" onClick={() => handleOverlaySearchAdd(name)}>
+                            <button className="ghost" onClick={() => handleOverlayAttributeAdd(name)}>
                               Add
                             </button>
                           </div>
                         </div>
-                      </div>
+                      </details>
                     </div>
-                    <div className="form-block">
-                      <h3>Extra overlay attributes</h3>
-                      <div className="builder-fields">
-                        {extraEntries.map(([key, value]) => {
-                          const rendered = stringifyValue(value);
-                          const multiline = rendered.includes("\n");
-                          return (
-                            <div key={`${name}-extra-${key}`} className="builder-row">
-                              <input
-                                className="input"
-                                defaultValue={key}
-                                onBlur={(event) =>
-                                  handleOverlayAttributeRename(name, key, event.target.value)
-                                }
-                                placeholder="Attribute key"
-                              />
-                              {multiline ? (
-                                <textarea
-                                  className="input"
-                                  value={rendered}
-                                  onChange={(event) =>
-                                    handleOverlayNestedField(
-                                      name,
-                                      "overlay",
-                                      key,
-                                      parseValueInput(event.target.value)
-                                    )
-                                  }
-                                />
-                              ) : (
-                                <input
-                                  className="input"
-                                  value={rendered}
-                                  onChange={(event) =>
-                                    handleOverlayNestedField(
-                                      name,
-                                      "overlay",
-                                      key,
-                                      parseValueInput(event.target.value)
-                                    )
-                                  }
-                                />
-                              )}
-                              <button
-                                className="ghost"
-                                onClick={() => handleOverlayAttributeRemove(name, key)}
-                              >
-                                Remove
-                              </button>
-                            </div>
-                          );
-                        })}
-                        <div className="builder-row">
-                          <input
-                            className="input"
-                            value={extraInput.key}
-                            placeholder="Attribute key"
-                            onChange={(event) =>
-                              handleOverlayAttributeInput(name, event.target.value, extraInput.value)
-                            }
-                          />
-                          <input
-                            className="input"
-                            value={extraInput.value}
-                            placeholder="Value"
-                            onChange={(event) =>
-                              handleOverlayAttributeInput(name, extraInput.key, event.target.value)
-                            }
-                          />
-                          <button className="ghost" onClick={() => handleOverlayAttributeAdd(name)}>
-                            Add
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-              {!Object.keys(overlaysMap).length && <p className="hint">No overlays defined yet.</p>}
-            </div>
-          </div>
-
-          <div className="card schema">
-            <div className="card-header">
-              <div>
-                <h2>Overlay file basics</h2>
-                <p className="hint">Overlays rely on positional attributes and search rules.</p>
+                  );
+                })}
+                {!Object.keys(overlaysMap).length && <p className="hint">No overlays defined yet.</p>}
               </div>
             </div>
-            <ul className="plain-list">
-              <li>All overlay coordinates assume 1000x1500 posters.</li>
-              <li>Use transparent PNGs for best results.</li>
-              <li>Overlays apply in the order they are defined.</li>
-              <li>Use horizontal/vertical align + offsets for placement.</li>
-            </ul>
+
+            <div className="card schema">
+              <div className="card-header">
+                <div>
+                  <h2>Overlay file basics</h2>
+                  <p className="hint">Overlays rely on positional attributes and search rules.</p>
+                </div>
+              </div>
+              <ul className="plain-list">
+                <li>All overlay coordinates assume 1000x1500 posters.</li>
+                <li>Use transparent PNGs for best results.</li>
+                <li>Overlays apply in the order they are defined.</li>
+                <li>Use horizontal/vertical align + offsets for placement.</li>
+              </ul>
+            </div>
           </div>
+          {overlayPreviewPanel}
         </div>
       )}
 
-      {(fileType === "overlays" || fileScope.id === "overlays") && (
-        <div className="card overlay-designer">
-          <div className="card-header">
-            <div>
-              <h2>Overlay designer</h2>
-              <p className="hint">
-                Compose overlays visually, then translate them to Kometa overlay files.
-              </p>
-            </div>
-            <span className="tag">Preview only</span>
-          </div>
-
-          <div className="overlay-layout">
-            <div className="overlay-controls">
-              <div className="section">
-                <div className="section-header">
-                  <h3>Overlay choices</h3>
-                  {overlayNames.length > 0 && (
-                    <button
-                      className="ghost small"
-                      onClick={() =>
-                        setOverlayPreviewSelection((prev) => {
-                          const next: Record<string, boolean> = {};
-                          overlayNames.forEach((name) => {
-                            next[name] = !allOverlaysSelected;
-                          });
-                          return next;
-                        })
-                      }
-                    >
-                      {allOverlaysSelected ? "Clear all" : "Select all"}
-                    </button>
-                  )}
-                </div>
-                <div className="overlay-list">
-                  {overlayNames.map((name) => (
-                    <label key={name} className="check-row">
-                      <input
-                        type="checkbox"
-                        checked={overlayPreviewSelection[name] ?? true}
-                        onChange={() =>
-                          setOverlayPreviewSelection((prev) => ({
-                            ...prev,
-                            [name]: !(prev[name] ?? true)
-                          }))
-                        }
-                      />
-                      {name}
-                    </label>
-                  ))}
-                  {!overlayNames.length && <p className="hint">No overlays defined yet.</p>}
-                </div>
-              </div>
-
-              <div className="section">
-                <h3>Poster source</h3>
-                <div className="segmented">
-                  <button
-                    className={posterMode === "sample" ? "active" : ""}
-                    onClick={() => setPosterMode("sample")}
-                  >
-                    PosterDB samples
-                  </button>
-                  <button
-                    className={posterMode === "asset" ? "active" : ""}
-                    onClick={() => setPosterMode("asset")}
-                    disabled={!assetPosters.length}
-                  >
-                    From assets
-                  </button>
-                </div>
-                {posterMode === "sample" && (
-                  <select
-                    className="input select"
-                    value={posterSampleId}
-                    onChange={(event) => setPosterSampleId(event.target.value)}
-                  >
-                    {SAMPLE_POSTERS.map((poster) => (
-                      <option key={poster.id} value={poster.id}>
-                        {poster.label}
-                      </option>
-                    ))}
-                  </select>
-                )}
-                {posterMode === "asset" && (
-                  <select
-                    className="input select"
-                    value={posterAssetPath}
-                    onChange={(event) => setPosterAssetPath(event.target.value)}
-                  >
-                    <option value="">Select an asset poster</option>
-                    {assetPosters.map((poster) => (
-                      <option key={poster.path} value={poster.path}>
-                        {poster.path}
-                      </option>
-                    ))}
-                  </select>
-                )}
-                <p className="hint">Samples are cached in /data/posters.</p>
-              </div>
-
-              <div className="section">
-                <h3>Kometa preview</h3>
-                <div className="field-row">
-                  <button
-                    className="primary"
-                    onClick={handleKometaPreview}
-                    disabled={
-                      kometaPreviewLoading ||
-                      !Object.keys(overlaysMap).length ||
-                      (posterMode === "asset" && !posterAssetPath)
-                    }
-                  >
-                    {kometaPreviewLoading ? "Rendering..." : "Render with Kometa"}
-                  </button>
-                  {kometaPreviewUrl && (
-                    <button className="ghost" onClick={handleClearKometaPreview}>
-                      Clear
-                    </button>
-                  )}
-                </div>
-                {kometaPreviewError && <p className="hint error">{kometaPreviewError}</p>}
-                <p className="hint">Runs Kometa inside the container for accurate overlay output.</p>
-              </div>
-
-              <div className="section">
-                <h3>Overlay snippet</h3>
-                <pre className="code-block">{overlaySnippet}</pre>
-                <p className="hint">Snippet reflects the overlays selected above.</p>
-              </div>
-
-              <div className="section">
-                <h3>Default overlays catalog</h3>
-                <input
-                  className="input"
-                  value={defaultOverlayQuery}
-                  onChange={(event) => setDefaultOverlayQuery(event.target.value)}
-                  placeholder="Search defaults (ex: 4k, imdb, hdr)"
-                />
-                <div className="overlay-catalog">
-                  {filteredDefaultOverlays.map((asset) => (
-                    <div key={asset.path} className="overlay-catalog-card">
-                      <img
-                        src={`/api/files/raw?path=${encodeURIComponent(asset.path)}`}
-                        alt={asset.path}
-                      />
-                      <div className="overlay-catalog-meta">
-                        <span>{asset.path.replace(".kometa-ui/defaults/overlays/images/", "")}</span>
-                        <button className="ghost small" onClick={() => handleDefaultOverlayAdd(asset.path)}>
-                          Add
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                  {!filteredDefaultOverlays.length && (
-                    <p className="hint">No default overlays found.</p>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="overlay-preview">
-              {SAMPLE_POSTERS.map((poster) => {
-                const cached = samplePosterMap[poster.id];
-                const imageUrl = cached ? samplePosterUrl(cached.id) : null;
-                const kometaPreview =
-                  Boolean(kometaPreviewUrl) &&
-                  (posterMode === "asset" ? poster.id === SAMPLE_POSTERS[0].id : poster.id === posterSampleId);
-                return (
-                  <div key={poster.id} className="poster-card">
-                    <div
-                      className="poster-frame"
-                      ref={poster.id === SAMPLE_POSTERS[0].id ? posterFrameRef : undefined}
-                    >
-                      {kometaPreview ? (
-                        <img src={kometaPreviewUrl ?? ""} alt="Kometa preview" />
-                      ) : posterMode === "asset" && posterAssetPath ? (
-                        <img
-                          src={`/api/files/raw?path=${encodeURIComponent(posterAssetPath)}`}
-                          alt="Selected poster asset"
-                        />
-                      ) : imageUrl ? (
-                        <img src={imageUrl} alt={poster.label} />
-                      ) : (
-                        <div className={`poster-sample poster-${poster.id}`}>
-                          <span>{poster.label}</span>
-                        </div>
-                      )}
-                      {!kometaPreview &&
-                        previewOverlays.map(([overlayName, overlayEntry]) => {
-                        if (!overlayScale) {
-                          return null;
-                        }
-                        const entry = isRecord(overlayEntry) ? overlayEntry : {};
-                        const overlayConfig = getOverlayConfig(entry);
-                        const overlayMeta = parseOverlayName(overlayConfig.name);
-                        const positionStyle = buildOverlayPosition(overlayConfig);
-                        const baseStyle: CSSProperties = {
-                          position: "absolute",
-                          pointerEvents: "none",
-                          ...positionStyle
-                        };
-
-                        const overlayImage =
-                          overlayMeta.kind === "text"
-                            ? resolveOverlayImage(overlayConfig, null)
-                            : resolveOverlayImage(overlayConfig, overlayMeta.name || overlayName);
-
-                        const scaleWidth = parsePercentValue(overlayConfig.scale_width, POSTER_BASE.width);
-                        const scaleHeight = parsePercentValue(overlayConfig.scale_height, POSTER_BASE.height);
-                        const imageStyle: CSSProperties = {};
-                        if (scaleWidth > 0) {
-                          imageStyle.width = `${scaleWidth * overlayScale}px`;
-                        }
-                        if (scaleHeight > 0) {
-                          imageStyle.height = `${scaleHeight * overlayScale}px`;
-                        }
-                        if (scaleWidth === 0 && scaleHeight === 0 && overlayScale !== 1) {
-                          imageStyle.transform = `scale(${overlayScale})`;
-                          imageStyle.transformOrigin = "top left";
-                        }
-
-                        if (overlayMeta.kind === "image") {
-                          return (
-                            <div key={`${poster.id}-${overlayName}`} className="overlay-render" style={baseStyle}>
-                              {overlayImage ? (
-                                <img
-                                  src={overlayImage}
-                                  alt={overlayName}
-                                  style={imageStyle}
-                                  className="overlay-image"
-                                />
-                              ) : (
-                                <div className="overlay-fallback">{overlayMeta.name || overlayName}</div>
-                              )}
-                            </div>
-                          );
-                        }
-
-                        if (overlayMeta.kind === "backdrop") {
-                          const backWidth = parsePercentValue(overlayConfig.back_width, POSTER_BASE.width);
-                          const backHeight = parsePercentValue(overlayConfig.back_height, POSTER_BASE.height);
-                          const backdropStyle: CSSProperties = {
-                            width: backWidth ? `${backWidth * overlayScale}px` : "100%",
-                            height: backHeight ? `${backHeight * overlayScale}px` : "100%",
-                            background: String(overlayConfig.back_color ?? "rgba(0, 0, 0, 0.4)"),
-                            borderRadius: `${(parseNumeric(overlayConfig.back_radius) ?? 0) * overlayScale}px`,
-                            border:
-                              overlayConfig.back_line_width || overlayConfig.back_line_color
-                                ? `${(parseNumeric(overlayConfig.back_line_width) ?? 1) * overlayScale}px solid ${
-                                    String(overlayConfig.back_line_color ?? "rgba(255,255,255,0.4)")
-                                  }`
-                                : undefined
-                          };
-                          return (
-                            <div key={`${poster.id}-${overlayName}`} className="overlay-render" style={baseStyle}>
-                              <div className="overlay-backdrop" style={backdropStyle} />
-                            </div>
-                          );
-                        }
-
-                        if (overlayMeta.kind === "blur") {
-                          const blurAmount = parseNumeric(overlayMeta.blur) ?? 20;
-                          return (
-                            <div key={`${poster.id}-${overlayName}`} className="overlay-render" style={baseStyle}>
-                              <div
-                                className="overlay-blur"
-                                style={{
-                                  width: "100%",
-                                  height: "100%",
-                                  backdropFilter: `blur(${blurAmount}px)`,
-                                  background: "rgba(0,0,0,0.15)"
-                                }}
-                              />
-                            </div>
-                          );
-                        }
-
-                        const fontSize = (parseNumeric(overlayConfig.font_size) ?? 60) * overlayScale;
-                        const fontColor = String(overlayConfig.font_color ?? "#FFFFFF");
-                        const fontStyleValue =
-                          typeof overlayConfig.font_style === "string" ? overlayConfig.font_style.toLowerCase() : "";
-                        const fontFamily = typeof overlayConfig.font === "string" ? overlayConfig.font : "Space Grotesk";
-                        const strokeWidth = (parseNumeric(overlayConfig.stroke_width) ?? 0) * overlayScale;
-                        const strokeColor = String(overlayConfig.stroke_color ?? "#000000");
-                        const backPadding = (parseNumeric(overlayConfig.back_padding) ?? 0) * overlayScale;
-                        const backRadius = (parseNumeric(overlayConfig.back_radius) ?? 0) * overlayScale;
-                        const backWidth = parsePercentValue(overlayConfig.back_width, POSTER_BASE.width);
-                        const backHeight = parsePercentValue(overlayConfig.back_height, POSTER_BASE.height);
-                        const backLineWidth = (parseNumeric(overlayConfig.back_line_width) ?? 0) * overlayScale;
-                        const backLineColor = String(overlayConfig.back_line_color ?? "#FFFFFF");
-                        const addonOffset = (parseNumeric(overlayConfig.addon_offset) ?? 0) * overlayScale;
-                        const addonPosition =
-                          typeof overlayConfig.addon_position === "string" ? overlayConfig.addon_position : "left";
-
-                        const backAlign = typeof overlayConfig.back_align === "string" ? overlayConfig.back_align : "center";
-                        const alignItems =
-                          backAlign === "left"
-                            ? "flex-start"
-                            : backAlign === "right"
-                              ? "flex-end"
-                              : "center";
-                        const justifyContent =
-                          backAlign === "top"
-                            ? "flex-start"
-                            : backAlign === "bottom"
-                              ? "flex-end"
-                              : "center";
-
-                        const textStyle: CSSProperties = {
-                          fontSize: `${fontSize}px`,
-                          color: fontColor,
-                          fontFamily,
-                          fontStyle: fontStyleValue.includes("italic") ? "italic" : "normal",
-                          fontWeight: fontStyleValue.includes("bold") ? 700 : 500,
-                          background: overlayConfig.back_color ? String(overlayConfig.back_color) : "transparent",
-                          padding: backPadding ? `${backPadding}px` : "0px",
-                          borderRadius: backRadius ? `${backRadius}px` : "0px",
-                          border:
-                            backLineWidth || overlayConfig.back_line_color
-                              ? `${backLineWidth || 1}px solid ${backLineColor}`
-                              : undefined,
-                          width: backWidth ? `${backWidth * overlayScale}px` : "auto",
-                          height: backHeight ? `${backHeight * overlayScale}px` : "auto",
-                          display: "inline-flex",
-                          alignItems,
-                          justifyContent,
-                          gap: addonOffset ? `${addonOffset}px` : "6px",
-                          textAlign: "center"
-                        };
-
-                        if (strokeWidth > 0) {
-                          textStyle.WebkitTextStroke = `${strokeWidth}px ${strokeColor}`;
-                        }
-
-                        const flexDirection =
-                          addonPosition === "right"
-                            ? "row"
-                            : addonPosition === "left"
-                              ? "row-reverse"
-                              : addonPosition === "top"
-                                ? "column-reverse"
-                                : "column";
-
-                        return (
-                          <div key={`${poster.id}-${overlayName}`} className="overlay-render" style={baseStyle}>
-                            <div className="overlay-text" style={{ ...textStyle, flexDirection }}>
-                              {overlayImage && (
-                                <img
-                                  src={overlayImage}
-                                  alt="addon"
-                                  className="overlay-addon"
-                                  style={imageStyle}
-                                />
-                              )}
-                              <span>{overlayMeta.text || overlayName}</span>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <p className="poster-caption">{poster.label}</p>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
+      {fileType !== "overlays" && fileScope.id === "overlays" && overlayPreviewPanel}
 
       <div className="editor-card">
         <div className="editor-toolbar">
