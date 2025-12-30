@@ -138,9 +138,16 @@ export function saveConfig(yaml: string) {
   });
 }
 
-export function listFiles(prefix?: string) {
-  const query = prefix ? `?prefix=${encodeURIComponent(prefix)}` : "";
-  return apiFetch<FileEntry[]>(`/api/files${query}`);
+export function listFiles(prefix?: string, extensions?: string[]) {
+  const params = new URLSearchParams();
+  if (prefix) {
+    params.set("prefix", prefix);
+  }
+  if (extensions && extensions.length) {
+    params.set("extensions", extensions.join(","));
+  }
+  const query = params.toString();
+  return apiFetch<FileEntry[]>(`/api/files${query ? `?${query}` : ""}`);
 }
 
 export function getFileContent(path: string) {

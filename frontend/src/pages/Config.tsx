@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { parse, stringify } from "yaml";
 
+import schema from "../data/kometa-config-schema.json";
 import {
   ApiError,
   createConfig,
@@ -21,12 +23,65 @@ type FileScope = {
   stub: string;
 };
 
+type ConfigDraft = Record<string, unknown>;
+
+type OverlayPosition = {
+  id: "top-left" | "top-right" | "bottom-left" | "bottom-right";
+  label: string;
+};
+
+type OverlayOption = {
+  id: string;
+  label: string;
+  defaultKey: string;
+  enabled: boolean;
+  position: OverlayPosition["id"];
+};
+
 const FILE_SCOPES: FileScope[] = [
   { id: "collections", label: "Collections", prefix: "collections", stub: "collections:\n" },
   { id: "overlays", label: "Overlays", prefix: "overlays", stub: "overlays:\n" },
   { id: "playlists", label: "Playlists", prefix: "playlists", stub: "playlists:\n" },
   { id: "other", label: "Other YAML", stub: "libraries: {}\n" }
 ];
+
+const OVERLAY_POSITIONS: OverlayPosition[] = [
+  { id: "top-left", label: "Top left" },
+  { id: "top-right", label: "Top right" },
+  { id: "bottom-left", label: "Bottom left" },
+  { id: "bottom-right", label: "Bottom right" }
+];
+
+const DEFAULT_OVERLAYS: OverlayOption[] = [
+  { id: "resolution", label: "Resolution", defaultKey: "resolution", enabled: true, position: "top-right" },
+  { id: "imdb", label: "IMDb Score", defaultKey: "ratings", enabled: false, position: "top-left" },
+  { id: "rotten", label: "Rotten Tomatoes", defaultKey: "ratings", enabled: false, position: "bottom-left" },
+  { id: "audio", label: "Audio Codec", defaultKey: "audio_codec", enabled: false, position: "bottom-left" },
+  { id: "ribbon", label: "Ribbon", defaultKey: "ribbon", enabled: false, position: "bottom-right" }
+];
+
+const SAMPLE_POSTERS = [
+  { id: "movie", label: "Sample Movie" },
+  { id: "show", label: "Sample Series" }
+];
+
+function cloneConfig(value: ConfigDraft | null): ConfigDraft {
+  if (!value) {
+    return {};
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isConfigCandidate(value: unknown): value is ConfigDraft {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return "libraries" in value || "plex" in value || "tmdb" in value;
+}
 
 export default function Config() {
   const { setRequiredMode } = useAuth();
@@ -49,11 +104,59 @@ export default function Config() {
   const [setActiveOnCreate, setSetActiveOnCreate] = useState(true);
   const [filePathInput, setFilePathInput] = useState("");
   const [newFileName, setNewFileName] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const [configDraft, setConfigDraft] = useState<ConfigDraft | null>(null);
+  const [configParseError, setConfigParseError] = useState<string | null>(null);
+  const [isConfigFile, setIsConfigFile] = useState(false);
+  const [newLibraryName, setNewLibraryName] = useState("");
+  const [assetDirectoryInput, setAssetDirectoryInput] = useState("");
+
+  const [overlayOptions, setOverlayOptions] = useState<OverlayOption[]>(DEFAULT_OVERLAYS);
+  const [posterMode, setPosterMode] = useState<"sample" | "asset">("sample");
+  const [assetPosters, setAssetPosters] = useState<FileEntry[]>([]);
+  const [posterAssetPath, setPosterAssetPath] = useState("");
+
+  const [schemaQuery, setSchemaQuery] = useState("");
 
   const selectedConfig = useMemo(
     () => configs.find((config) => config.path === activeConfig),
     [activeConfig, configs]
   );
+
+  const schemaKeys = useMemo(() => {
+    const properties = (schema as Record<string, unknown>).properties;
+    if (!isRecord(properties)) {
+      return [] as string[];
+    }
+    return Object.keys(properties).sort();
+  }, []);
+
+  const filteredSchemaKeys = useMemo(() => {
+    if (!schemaQuery.trim()) {
+      return schemaKeys.slice(0, 12);
+    }
+    const query = schemaQuery.toLowerCase();
+    return schemaKeys.filter((key) => key.toLowerCase().includes(query)).slice(0, 20);
+  }, [schemaKeys, schemaQuery]);
+
+  const libraries = useMemo(() => {
+    if (!configDraft || !isRecord(configDraft.libraries)) {
+      return [] as string[];
+    }
+    return Object.keys(configDraft.libraries as Record<string, unknown>);
+  }, [configDraft]);
+
+  const overlaySnippet = useMemo(() => {
+    const active = overlayOptions.filter((option) => option.enabled);
+    if (!active.length) {
+      return "# No overlays selected yet";
+    }
+    return [
+      "overlay_files:",
+      ...active.map((option) => `  - default: ${option.defaultKey}  # ${option.label}`)
+    ].join("\n");
+  }, [overlayOptions]);
 
   const openFile = useCallback(
     async (path: string) => {
@@ -65,6 +168,24 @@ export default function Config() {
         setSelectedFile(data.path);
         setYaml(data.yaml);
         setLastModified(data.last_modified);
+
+        try {
+          const parsed = parse(data.yaml) as unknown;
+          if (isConfigCandidate(parsed) || data.path === activeConfig) {
+            const draft = isConfigCandidate(parsed) ? parsed : {};
+            setConfigDraft(draft as ConfigDraft);
+            setIsConfigFile(true);
+            setConfigParseError(null);
+          } else {
+            setConfigDraft(null);
+            setIsConfigFile(false);
+            setConfigParseError(null);
+          }
+        } catch (parseError) {
+          setConfigDraft(null);
+          setIsConfigFile(data.path === activeConfig);
+          setConfigParseError((parseError as Error).message);
+        }
       } catch (err) {
         const apiErr = err as ApiError;
         if (apiErr.status === 401) {
@@ -76,7 +197,7 @@ export default function Config() {
         setEditorLoading(false);
       }
     },
-    [setRequiredMode]
+    [activeConfig, setRequiredMode]
   );
 
   const refreshConfigs = useCallback(async () => {
@@ -118,6 +239,18 @@ export default function Config() {
     [setRequiredMode]
   );
 
+  const refreshPosterAssets = useCallback(async () => {
+    try {
+      const data = await listFiles("assets", ["png", "jpg", "jpeg", "webp"]);
+      setAssetPosters(data);
+    } catch (err) {
+      const apiErr = err as ApiError;
+      if (apiErr.status === 401) {
+        setRequiredMode(apiErr.authMode ?? "basic");
+      }
+    }
+  }, [setRequiredMode]);
+
   useEffect(() => {
     refreshConfigs();
   }, [refreshConfigs]);
@@ -125,6 +258,43 @@ export default function Config() {
   useEffect(() => {
     refreshFiles(fileScope);
   }, [fileScope, refreshFiles]);
+
+  useEffect(() => {
+    refreshPosterAssets();
+  }, [refreshPosterAssets]);
+
+  const updateConfigDraft = useCallback(
+    (mutator: (draft: ConfigDraft) => void) => {
+      if (!isConfigFile) {
+        return;
+      }
+      setConfigDraft((prev) => {
+        const next = cloneConfig(prev);
+        mutator(next);
+        setYaml(stringify(next, { indent: 2 }));
+        return next;
+      });
+    },
+    [isConfigFile]
+  );
+
+  const handleSyncFromYaml = () => {
+    if (!isConfigFile) {
+      return;
+    }
+    try {
+      const parsed = parse(yaml) as unknown;
+      if (isConfigCandidate(parsed)) {
+        setConfigDraft(parsed as ConfigDraft);
+        setConfigParseError(null);
+        setMessage("Form synced from YAML.");
+      } else {
+        setConfigParseError("Config root must be a mapping.");
+      }
+    } catch (parseError) {
+      setConfigParseError((parseError as Error).message);
+    }
+  };
 
   const handleValidate = async () => {
     setMessage(null);
@@ -268,12 +438,90 @@ export default function Config() {
     }
   };
 
+  const handleLibraryAdd = () => {
+    if (!newLibraryName.trim()) {
+      return;
+    }
+    const name = newLibraryName.trim();
+    updateConfigDraft((draft) => {
+      const librariesDraft = isRecord(draft.libraries) ? draft.libraries : {};
+      if (!isRecord(librariesDraft)) {
+        draft.libraries = {};
+      }
+      const updated = isRecord(draft.libraries) ? { ...draft.libraries } : {};
+      updated[name] = updated[name] ?? {};
+      draft.libraries = updated;
+    });
+    setNewLibraryName("");
+  };
+
+  const handleLibraryRemove = (name: string) => {
+    updateConfigDraft((draft) => {
+      if (!isRecord(draft.libraries)) {
+        return;
+      }
+      const updated = { ...draft.libraries } as Record<string, unknown>;
+      delete updated[name];
+      draft.libraries = updated;
+    });
+  };
+
+  const handleAssetDirectoryAdd = () => {
+    if (!assetDirectoryInput.trim()) {
+      return;
+    }
+    updateConfigDraft((draft) => {
+      const settings = isRecord(draft.settings) ? { ...draft.settings } : {};
+      const assetDirectory = Array.isArray(settings.asset_directory)
+        ? [...settings.asset_directory]
+        : settings.asset_directory
+          ? [settings.asset_directory]
+          : [];
+      assetDirectory.push(assetDirectoryInput.trim());
+      settings.asset_directory = assetDirectory;
+      draft.settings = settings;
+    });
+    setAssetDirectoryInput("");
+  };
+
+  const handleOverlayToggle = (id: string) => {
+    setOverlayOptions((prev) =>
+      prev.map((option) =>
+        option.id === id ? { ...option, enabled: !option.enabled } : option
+      )
+    );
+  };
+
+  const handleOverlayPosition = (id: string, position: OverlayPosition["id"]) => {
+    setOverlayOptions((prev) =>
+      prev.map((option) => (option.id === id ? { ...option, position } : option))
+    );
+  };
+
+  const plexUrl = isRecord(configDraft?.plex) ? (configDraft?.plex as Record<string, unknown>).url ?? "" : "";
+  const plexToken = isRecord(configDraft?.plex)
+    ? (configDraft?.plex as Record<string, unknown>).token ?? ""
+    : "";
+  const tmdbKey = isRecord(configDraft?.tmdb) ? (configDraft?.tmdb as Record<string, unknown>).apikey ?? "" : "";
+  const cacheEnabled = isRecord(configDraft?.settings)
+    ? Boolean((configDraft?.settings as Record<string, unknown>).cache)
+    : false;
+  const assetDirectory = isRecord(configDraft?.settings)
+    ? (configDraft?.settings as Record<string, unknown>).asset_directory
+    : undefined;
+  const assetDirectoryList = Array.isArray(assetDirectory)
+    ? assetDirectory
+    : assetDirectory
+      ? [assetDirectory]
+      : [];
+
   return (
-    <section className="page">
+    <section className="page config-studio">
       <div className="page-header">
         <div>
-          <h1>Config Studio</h1>
-          <p>Manage configs and the YAML files that power collections, overlays, and playlists.</p>
+          <p className="eyebrow">Config Studio</p>
+          <h1>Visual builder for Kometa</h1>
+          <p>Fill in the essentials, then drop into advanced YAML only when you need it.</p>
         </div>
         <div className="meta">
           <span>Active config</span>
@@ -288,7 +536,7 @@ export default function Config() {
         <div className="card">
           <div className="card-header">
             <div>
-              <h2>Config Files</h2>
+              <h2>Config files</h2>
               <p className="hint">Root: {configRoot ?? "-"}</p>
             </div>
           </div>
@@ -360,8 +608,8 @@ export default function Config() {
         <div className="card">
           <div className="card-header">
             <div>
-              <h2>YAML Library</h2>
-              <p className="hint">Browse YAML files by purpose, or open any path.</p>
+              <h2>YAML library</h2>
+              <p className="hint">Browse collections, overlays, playlists, or open any YAML path.</p>
             </div>
           </div>
           <div className="segmented">
@@ -435,32 +683,329 @@ export default function Config() {
         </div>
       </div>
 
+      <div className="grid two">
+        <div className="card builder">
+          <div className="card-header">
+            <div>
+              <h2>Form-first config</h2>
+              <p className="hint">Edit the core Kometa settings without touching YAML.</p>
+            </div>
+            <button className="ghost" onClick={handleSyncFromYaml} disabled={!isConfigFile}>
+              Sync from YAML
+            </button>
+          </div>
+          {!isConfigFile && (
+            <div className="empty-state">
+              <p>Select a config YAML file to unlock the form builder.</p>
+            </div>
+          )}
+          {isConfigFile && (
+            <div className="form-stack">
+              {configParseError && <div className="banner error">{configParseError}</div>}
+              <div className="section">
+                <h3>Connections</h3>
+                <div className="field-grid">
+                  <label className="field">
+                    <span>Plex URL</span>
+                    <input
+                      className="input"
+                      value={String(plexUrl)}
+                      onChange={(event) =>
+                        updateConfigDraft((draft) => {
+                          const plex = isRecord(draft.plex) ? { ...draft.plex } : {};
+                          plex.url = event.target.value;
+                          draft.plex = plex;
+                        })
+                      }
+                      placeholder="http://192.168.1.12:32400"
+                    />
+                    <small>Required. Use your server URL, not app.plex.tv.</small>
+                  </label>
+                  <label className="field">
+                    <span>Plex Token</span>
+                    <input
+                      className="input"
+                      value={String(plexToken)}
+                      onChange={(event) =>
+                        updateConfigDraft((draft) => {
+                          const plex = isRecord(draft.plex) ? { ...draft.plex } : {};
+                          plex.token = event.target.value;
+                          draft.plex = plex;
+                        })
+                      }
+                      placeholder="Paste token"
+                    />
+                    <small>Required to authenticate with Plex.</small>
+                  </label>
+                  <label className="field">
+                    <span>TMDb API Key</span>
+                    <input
+                      className="input"
+                      value={String(tmdbKey)}
+                      onChange={(event) =>
+                        updateConfigDraft((draft) => {
+                          const tmdb = isRecord(draft.tmdb) ? { ...draft.tmdb } : {};
+                          tmdb.apikey = event.target.value;
+                          draft.tmdb = tmdb;
+                        })
+                      }
+                      placeholder="TMDb API key"
+                    />
+                    <small>Required for metadata and defaults.</small>
+                  </label>
+                </div>
+              </div>
+
+              <div className="section">
+                <h3>Libraries</h3>
+                <p className="hint">Match Plex library names exactly. Add at least one.</p>
+                <div className="pill-row">
+                  {libraries.map((name) => (
+                    <span key={name} className="pill">
+                      {name}
+                      <button onClick={() => handleLibraryRemove(name)} aria-label={`Remove ${name}`}>
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                  {!libraries.length && <span className="hint">No libraries yet.</span>}
+                </div>
+                <div className="field-row">
+                  <input
+                    className="input"
+                    value={newLibraryName}
+                    onChange={(event) => setNewLibraryName(event.target.value)}
+                    placeholder="Movies"
+                  />
+                  <button className="ghost" onClick={handleLibraryAdd}>
+                    Add library
+                  </button>
+                </div>
+              </div>
+
+              <div className="section">
+                <h3>Settings</h3>
+                <div className="field-grid">
+                  <label className="field">
+                    <span>Cache Enabled</span>
+                    <div className="toggle">
+                      <input
+                        type="checkbox"
+                        checked={cacheEnabled}
+                        onChange={(event) =>
+                          updateConfigDraft((draft) => {
+                            const settings = isRecord(draft.settings) ? { ...draft.settings } : {};
+                            settings.cache = event.target.checked;
+                            draft.settings = settings;
+                          })
+                        }
+                      />
+                      <span>{cacheEnabled ? "On" : "Off"}</span>
+                    </div>
+                    <small>Kometa cache speeds up repeated runs.</small>
+                  </label>
+                  <label className="field">
+                    <span>Asset directories</span>
+                    <div className="pill-row">
+                      {assetDirectoryList.map((entry, index) => (
+                        <span key={`${entry}-${index}`} className="pill">
+                          {String(entry)}
+                        </span>
+                      ))}
+                      {!assetDirectoryList.length && <span className="hint">No directories yet.</span>}
+                    </div>
+                    <div className="field-row">
+                      <input
+                        className="input"
+                        value={assetDirectoryInput}
+                        onChange={(event) => setAssetDirectoryInput(event.target.value)}
+                        placeholder="config/assets"
+                      />
+                      <button className="ghost" onClick={handleAssetDirectoryAdd}>
+                        Add path
+                      </button>
+                    </div>
+                    <small>Where Kometa stores artwork and overlay assets.</small>
+                  </label>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="card schema">
+          <div className="card-header">
+            <div>
+              <h2>Kometa settings index</h2>
+              <p className="hint">Search every config key (schema bundled in repo).</p>
+            </div>
+          </div>
+          <div className="field-row">
+            <input
+              className="input"
+              value={schemaQuery}
+              onChange={(event) => setSchemaQuery(event.target.value)}
+              placeholder="Search settings (ex: radarr, overlays, schedules)"
+            />
+          </div>
+          <div className="pill-row">
+            {filteredSchemaKeys.map((key) => (
+              <span key={key} className="pill ghost">
+                {key}
+              </span>
+            ))}
+            {!filteredSchemaKeys.length && <span className="hint">No matches yet.</span>}
+          </div>
+          <p className="hint">
+            Full schema-driven forms are next. This shows you every setting Kometa knows.
+          </p>
+        </div>
+      </div>
+
+      <div className="card overlay-designer">
+        <div className="card-header">
+          <div>
+            <h2>Overlay designer</h2>
+            <p className="hint">
+              Compose overlays visually, then translate them to Kometa overlay files.
+            </p>
+          </div>
+          <span className="tag">Preview only</span>
+        </div>
+
+        <div className="overlay-layout">
+          <div className="overlay-controls">
+            <div className="section">
+              <h3>Overlay choices</h3>
+              <div className="overlay-list">
+                {overlayOptions.map((option) => (
+                  <div key={option.id} className="overlay-item">
+                    <label className="check-row">
+                      <input
+                        type="checkbox"
+                        checked={option.enabled}
+                        onChange={() => handleOverlayToggle(option.id)}
+                      />
+                      {option.label}
+                    </label>
+                    <select
+                      className="input select"
+                      value={option.position}
+                      onChange={(event) =>
+                        handleOverlayPosition(
+                          option.id,
+                          event.target.value as OverlayPosition["id"]
+                        )
+                      }
+                    >
+                      {OVERLAY_POSITIONS.map((position) => (
+                        <option key={position.id} value={position.id}>
+                          {position.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="section">
+              <h3>Poster source</h3>
+              <div className="segmented">
+                <button
+                  className={posterMode === "sample" ? "active" : ""}
+                  onClick={() => setPosterMode("sample")}
+                >
+                  Samples
+                </button>
+                <button
+                  className={posterMode === "asset" ? "active" : ""}
+                  onClick={() => setPosterMode("asset")}
+                  disabled={!assetPosters.length}
+                >
+                  From assets
+                </button>
+              </div>
+              {posterMode === "asset" && (
+                <select
+                  className="input select"
+                  value={posterAssetPath}
+                  onChange={(event) => setPosterAssetPath(event.target.value)}
+                >
+                  <option value="">Select an asset poster</option>
+                  {assetPosters.map((poster) => (
+                    <option key={poster.path} value={poster.path}>
+                      {poster.path}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <p className="hint">Overlay files live under `/config/overlays` and assets under `/config/assets`.</p>
+            </div>
+
+            <div className="section">
+              <h3>Overlay snippet</h3>
+              <pre className="code-block">{overlaySnippet}</pre>
+              <p className="hint">Placement controls are visual only for now.</p>
+            </div>
+          </div>
+
+          <div className="overlay-preview">
+            {SAMPLE_POSTERS.map((poster) => (
+              <div key={poster.id} className="poster-card">
+                <div className="poster-frame">
+                  {posterMode === "asset" && posterAssetPath ? (
+                    <img
+                      src={`/api/files/raw?path=${encodeURIComponent(posterAssetPath)}`}
+                      alt="Selected poster asset"
+                    />
+                  ) : (
+                    <div className={`poster-sample poster-${poster.id}`}>
+                      <span>{poster.label}</span>
+                    </div>
+                  )}
+                  {overlayOptions
+                    .filter((option) => option.enabled)
+                    .map((option) => (
+                      <div key={`${poster.id}-${option.id}`} className={`overlay-chip ${option.position}`}>
+                        {option.label}
+                      </div>
+                    ))}
+                </div>
+                <p className="poster-caption">{poster.label}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
       <div className="editor-card">
         <div className="editor-toolbar">
           <div>
-            <h2>Editor</h2>
-            <p className="hint">{selectedFile ? `Editing ${selectedFile}` : "Select a file to edit."}</p>
+            <h2>Advanced YAML</h2>
+            <p className="hint">
+              {selectedFile ? `Editing ${selectedFile}` : "Select a file to edit."}
+            </p>
           </div>
-          <div className="meta">
-            <span>Last modified</span>
-            <strong>
-              {lastModified ? new Date(lastModified * 1000).toLocaleString() : "-"}
-            </strong>
+          <div className="editor-actions">
+            <button className="ghost" onClick={() => setShowAdvanced((value) => !value)}>
+              {showAdvanced ? "Hide YAML" : "Show YAML"}
+            </button>
+            <button className="ghost" onClick={handleValidate}>
+              Validate
+            </button>
+            <button className="primary" onClick={handleSave} disabled={!selectedFile}>
+              Save
+            </button>
           </div>
         </div>
-        <textarea
-          value={yaml}
-          onChange={(event) => setYaml(event.target.value)}
-          placeholder={editorLoading ? "Loading..." : "Select a file to start editing."}
-        />
-        <div className="editor-actions">
-          <button className="ghost" onClick={handleValidate}>
-            Validate
-          </button>
-          <button className="primary" onClick={handleSave} disabled={!selectedFile}>
-            Save
-          </button>
-        </div>
+        {showAdvanced && (
+          <textarea
+            value={yaml}
+            onChange={(event) => setYaml(event.target.value)}
+            placeholder={editorLoading ? "Loading..." : "Select a file to start editing."}
+          />
+        )}
       </div>
     </section>
   );
