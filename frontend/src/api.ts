@@ -28,6 +28,12 @@ export type FileEntry = {
   size: number;
 };
 
+export type SamplePoster = {
+  id: string;
+  label: string;
+  filename: string;
+};
+
 export type RunRecord = {
   id: string;
   started_at: number;
@@ -165,6 +171,14 @@ export function saveFile(path: string, yaml: string) {
       body: JSON.stringify({ path, yaml })
     }
   );
+}
+
+export function listSamplePosters() {
+  return apiFetch<SamplePoster[]>("/api/posters/samples");
+}
+
+export function samplePosterUrl(id: string) {
+  return `/api/posters/raw/${encodeURIComponent(id)}`;
 }
 
 export function createRun(trigger = "manual") {
