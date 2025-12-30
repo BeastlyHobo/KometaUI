@@ -34,6 +34,13 @@ export type SamplePoster = {
   filename: string;
 };
 
+export type OverlayPreviewResponse = {
+  ok: boolean;
+  id?: string;
+  url?: string;
+  error?: string;
+};
+
 export type RunRecord = {
   id: string;
   started_at: number;
@@ -179,6 +186,31 @@ export function listSamplePosters() {
 
 export function samplePosterUrl(id: string) {
   return `/api/posters/raw/${encodeURIComponent(id)}`;
+}
+
+export function renderOverlayPreview(payload: {
+  overlays: Record<string, Record<string, unknown>>;
+  queues?: Record<string, unknown>;
+  overlay_order?: string[];
+  poster_mode: "sample" | "asset";
+  poster_id?: string;
+  poster_path?: string;
+}) {
+  return apiFetch<OverlayPreviewResponse>("/api/overlays/preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+}
+
+export function listDefaultOverlays() {
+  return apiFetch<FileEntry[]>("/api/overlays/defaults");
+}
+
+export function syncDefaultOverlays() {
+  return apiFetch<{ ok: boolean }>("/api/overlays/defaults/sync", {
+    method: "POST"
+  });
 }
 
 export function createRun(trigger = "manual") {

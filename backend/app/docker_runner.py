@@ -71,3 +71,31 @@ def run_kometa(settings: Settings, log_path: Path, config_path: Path) -> int:
     inspect = api_client.exec_inspect(exec_id)
     exit_code = inspect.get("ExitCode")
     return int(exit_code) if exit_code is not None else 1
+
+
+def exec_in_container(settings: Settings, cmd: list[str]) -> tuple[int, str]:
+    if not docker_socket_enabled(settings):
+        raise RuntimeError("Docker socket is not mounted")
+
+    client = docker.from_env()
+    container = client.containers.get(settings.kometa_container_name)
+    container.reload()
+    if container.status != "running":
+        raise RuntimeError(f"Kometa container is not running (status: {container.status})")
+
+    api_client = client.api
+    exec_info = api_client.exec_create(container.id, cmd, stdout=True, stderr=True)
+    exec_id = exec_info.get("Id")
+    if not exec_id:
+        raise RuntimeError("Failed to create exec session")
+
+    output: list[str] = []
+    for stdout, stderr in api_client.exec_start(exec_id, stream=True, demux=True):
+        if stdout:
+            output.append(stdout.decode("utf-8", errors="ignore"))
+        if stderr:
+            output.append(stderr.decode("utf-8", errors="ignore"))
+
+    inspect = api_client.exec_inspect(exec_id)
+    exit_code = inspect.get("ExitCode")
+    return int(exit_code) if exit_code is not None else 1, "".join(output)

@@ -8,10 +8,13 @@ import {
   getFileContent,
   listConfigs,
   listFiles,
+  listDefaultOverlays,
   listSamplePosters,
+  renderOverlayPreview,
   samplePosterUrl,
   saveFile,
   setActiveConfig,
+  syncDefaultOverlays,
   validateConfig,
   type ConfigEntry,
   type FileEntry,
@@ -378,11 +381,17 @@ export default function Config() {
   >({});
 
   const [posterMode, setPosterMode] = useState<"sample" | "asset">("sample");
+  const [posterSampleId, setPosterSampleId] = useState("movie");
   const [assetPosters, setAssetPosters] = useState<FileEntry[]>([]);
   const [posterAssetPath, setPosterAssetPath] = useState("");
   const [samplePosters, setSamplePosters] = useState<SamplePoster[]>([]);
   const [overlayImages, setOverlayImages] = useState<FileEntry[]>([]);
   const [overlayPreviewSelection, setOverlayPreviewSelection] = useState<Record<string, boolean>>({});
+  const [kometaPreviewUrl, setKometaPreviewUrl] = useState<string | null>(null);
+  const [kometaPreviewLoading, setKometaPreviewLoading] = useState(false);
+  const [kometaPreviewError, setKometaPreviewError] = useState<string | null>(null);
+  const [defaultOverlayAssets, setDefaultOverlayAssets] = useState<FileEntry[]>([]);
+  const [defaultOverlayQuery, setDefaultOverlayQuery] = useState("");
 
   const [schemaQuery, setSchemaQuery] = useState("");
   const [posterWidth, setPosterWidth] = useState(0);
@@ -585,6 +594,21 @@ export default function Config() {
     }
   }, [setRequiredMode]);
 
+  const refreshDefaultOverlays = useCallback(async () => {
+    try {
+      await syncDefaultOverlays();
+      const data = await listDefaultOverlays();
+      setDefaultOverlayAssets(data);
+    } catch (err) {
+      const apiErr = err as ApiError;
+      if (apiErr.status === 401) {
+        setRequiredMode(apiErr.authMode ?? "basic");
+      } else {
+        setError(apiErr.message || "Failed to load default overlays");
+      }
+    }
+  }, [setRequiredMode]);
+
   useEffect(() => {
     refreshConfigs();
   }, [refreshConfigs]);
@@ -598,6 +622,12 @@ export default function Config() {
     refreshOverlayImages();
     refreshSamplePosters();
   }, [refreshOverlayImages, refreshPosterAssets, refreshSamplePosters]);
+
+  useEffect(() => {
+    if (fileType === "overlays" || fileScope.id === "overlays") {
+      refreshDefaultOverlays();
+    }
+  }, [fileScope.id, fileType, refreshDefaultOverlays]);
 
   useEffect(() => {
     const names = Object.keys(overlaysMap);
@@ -636,6 +666,10 @@ export default function Config() {
   useEffect(() => {
     setCollectionPresetValue("");
   }, [collectionPresetId]);
+
+  useEffect(() => {
+    setKometaPreviewUrl(null);
+  }, [overlaysMap, posterMode, posterAssetPath, posterSampleId]);
 
   const updateConfigDraft = useCallback(
     (mutator: (draft: ConfigDraft) => void) => {
@@ -1375,6 +1409,67 @@ export default function Config() {
     });
   };
 
+  const handleDefaultOverlayAdd = (path: string) => {
+    const prefix = ".kometa-ui/defaults/overlays/images/";
+    const relative = path.startsWith(prefix) ? path.slice(prefix.length) : path;
+    const base = relative.replace(/\.[^.]+$/, "").replace(/[\\/]/g, " ").trim();
+    if (!base) {
+      return;
+    }
+    updateFileDraft((draft) => {
+      const overlays = isRecord(draft.overlays) ? { ...draft.overlays } : {};
+      let name = base;
+      let counter = 2;
+      while (name in overlays) {
+        name = `${base} ${counter}`;
+        counter += 1;
+      }
+      overlays[name] = {
+        overlay: {
+          name: base,
+          default: relative
+        }
+      };
+      draft.overlays = overlays;
+    });
+  };
+
+  const handleKometaPreview = async () => {
+    setKometaPreviewLoading(true);
+    setKometaPreviewError(null);
+    try {
+      const queues = fileDraft && isRecord(fileDraft.queues) ? (fileDraft.queues as Record<string, unknown>) : undefined;
+      const response = await renderOverlayPreview({
+        overlays: overlaysMap,
+        queues,
+        overlay_order: Object.keys(overlaysMap),
+        poster_mode: posterMode,
+        poster_id: posterSampleId,
+        poster_path: posterMode === "asset" ? posterAssetPath : undefined
+      });
+      if (!response.ok || !response.url) {
+        setKometaPreviewError(response.error || "Kometa preview failed");
+        setKometaPreviewUrl(null);
+        return;
+      }
+      setKometaPreviewUrl(`${response.url}?t=${Date.now()}`);
+    } catch (err) {
+      const apiErr = err as ApiError;
+      if (apiErr.status === 401) {
+        setRequiredMode(apiErr.authMode ?? "basic");
+      } else {
+        setKometaPreviewError(apiErr.message || "Kometa preview failed");
+      }
+    } finally {
+      setKometaPreviewLoading(false);
+    }
+  };
+
+  const handleClearKometaPreview = () => {
+    setKometaPreviewUrl(null);
+    setKometaPreviewError(null);
+  };
+
   const plexUrl = isRecord(configDraft?.plex) ? (configDraft?.plex as Record<string, unknown>).url ?? "" : "";
   const plexToken = isRecord(configDraft?.plex)
     ? (configDraft?.plex as Record<string, unknown>).token ?? ""
@@ -1409,6 +1504,14 @@ export default function Config() {
       Object.entries(overlaysMap).filter(([name]) => overlayPreviewSelection[name] ?? true),
     [overlaysMap, overlayPreviewSelection]
   );
+
+  const filteredDefaultOverlays = useMemo(() => {
+    const query = defaultOverlayQuery.trim().toLowerCase();
+    if (!query) {
+      return defaultOverlayAssets;
+    }
+    return defaultOverlayAssets.filter((asset) => asset.path.toLowerCase().includes(query));
+  }, [defaultOverlayAssets, defaultOverlayQuery]);
 
   const resolveOverlayImage = useCallback(
     (overlayConfig: Record<string, unknown>, fallbackName?: string | null) => {
@@ -3359,6 +3462,19 @@ export default function Config() {
                     From assets
                   </button>
                 </div>
+                {posterMode === "sample" && (
+                  <select
+                    className="input select"
+                    value={posterSampleId}
+                    onChange={(event) => setPosterSampleId(event.target.value)}
+                  >
+                    {SAMPLE_POSTERS.map((poster) => (
+                      <option key={poster.id} value={poster.id}>
+                        {poster.label}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 {posterMode === "asset" && (
                   <select
                     className="input select"
@@ -3377,9 +3493,62 @@ export default function Config() {
               </div>
 
               <div className="section">
+                <h3>Kometa preview</h3>
+                <div className="field-row">
+                  <button
+                    className="primary"
+                    onClick={handleKometaPreview}
+                    disabled={
+                      kometaPreviewLoading ||
+                      !Object.keys(overlaysMap).length ||
+                      (posterMode === "asset" && !posterAssetPath)
+                    }
+                  >
+                    {kometaPreviewLoading ? "Rendering..." : "Render with Kometa"}
+                  </button>
+                  {kometaPreviewUrl && (
+                    <button className="ghost" onClick={handleClearKometaPreview}>
+                      Clear
+                    </button>
+                  )}
+                </div>
+                {kometaPreviewError && <p className="hint error">{kometaPreviewError}</p>}
+                <p className="hint">Runs Kometa inside the container for accurate overlay output.</p>
+              </div>
+
+              <div className="section">
                 <h3>Overlay snippet</h3>
                 <pre className="code-block">{overlaySnippet}</pre>
                 <p className="hint">Snippet reflects the overlays selected above.</p>
+              </div>
+
+              <div className="section">
+                <h3>Default overlays catalog</h3>
+                <input
+                  className="input"
+                  value={defaultOverlayQuery}
+                  onChange={(event) => setDefaultOverlayQuery(event.target.value)}
+                  placeholder="Search defaults (ex: 4k, imdb, hdr)"
+                />
+                <div className="overlay-catalog">
+                  {filteredDefaultOverlays.map((asset) => (
+                    <div key={asset.path} className="overlay-catalog-card">
+                      <img
+                        src={`/api/files/raw?path=${encodeURIComponent(asset.path)}`}
+                        alt={asset.path}
+                      />
+                      <div className="overlay-catalog-meta">
+                        <span>{asset.path.replace(".kometa-ui/defaults/overlays/images/", "")}</span>
+                        <button className="ghost small" onClick={() => handleDefaultOverlayAdd(asset.path)}>
+                          Add
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {!filteredDefaultOverlays.length && (
+                    <p className="hint">No default overlays found.</p>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -3387,13 +3556,18 @@ export default function Config() {
               {SAMPLE_POSTERS.map((poster) => {
                 const cached = samplePosterMap[poster.id];
                 const imageUrl = cached ? samplePosterUrl(cached.id) : null;
+                const kometaPreview =
+                  Boolean(kometaPreviewUrl) &&
+                  (posterMode === "asset" ? poster.id === SAMPLE_POSTERS[0].id : poster.id === posterSampleId);
                 return (
                   <div key={poster.id} className="poster-card">
                     <div
                       className="poster-frame"
                       ref={poster.id === SAMPLE_POSTERS[0].id ? posterFrameRef : undefined}
                     >
-                      {posterMode === "asset" && posterAssetPath ? (
+                      {kometaPreview ? (
+                        <img src={kometaPreviewUrl ?? ""} alt="Kometa preview" />
+                      ) : posterMode === "asset" && posterAssetPath ? (
                         <img
                           src={`/api/files/raw?path=${encodeURIComponent(posterAssetPath)}`}
                           alt="Selected poster asset"
@@ -3405,7 +3579,8 @@ export default function Config() {
                           <span>{poster.label}</span>
                         </div>
                       )}
-                      {previewOverlays.map(([overlayName, overlayEntry]) => {
+                      {!kometaPreview &&
+                        previewOverlays.map(([overlayName, overlayEntry]) => {
                         if (!overlayScale) {
                           return null;
                         }
