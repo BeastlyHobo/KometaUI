@@ -149,8 +149,13 @@ const DYNAMIC_QUICK_FIELDS = new Set([
 
 const TEMPLATE_CONTROL_FIELDS = new Set(["default", "optional", "conditionals", "move_prefix"]);
 
-const OVERLAY_ENTRY_FIELDS = new Set([
-  "overlay",
+const OVERLAY_BLOCK_FIELDS = new Set([
+  "name",
+  "default",
+  "file",
+  "url",
+  "git",
+  "repo",
   "scale_width",
   "scale_height",
   "font",
@@ -175,12 +180,7 @@ const OVERLAY_ENTRY_FIELDS = new Set([
   "vertical_offset",
   "group",
   "queue",
-  "weight",
-  "suppress_overlays",
-  "builder_level",
-  "plex_all",
-  "plex_search",
-  "filters"
+  "weight"
 ]);
 
 const OVERLAY_SEARCH_FIELDS = new Set(["resolution", "hdr"]);
@@ -199,6 +199,16 @@ function cloneConfig(value: ConfigDraft | null): ConfigDraft {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function getOverlayConfig(entry: Record<string, unknown>): Record<string, unknown> {
+  const overlayConfig = isRecord(entry.overlay) ? { ...(entry.overlay as Record<string, unknown>) } : {};
+  OVERLAY_BLOCK_FIELDS.forEach((field) => {
+    if (!(field in overlayConfig) && field in entry) {
+      overlayConfig[field] = entry[field];
+    }
+  });
+  return overlayConfig;
 }
 
 function isConfigCandidate(value: unknown): value is ConfigDraft {
@@ -1244,7 +1254,12 @@ export default function Config() {
     }
     updateFileDraft((draft) => {
       const overlays = isRecord(draft.overlays) ? { ...draft.overlays } : {};
-      overlays[overlayNameInput.trim()] = overlays[overlayNameInput.trim()] ?? {};
+      const name = overlayNameInput.trim();
+      const entry = isRecord(overlays[name]) ? { ...(overlays[name] as Record<string, unknown>) } : {};
+      if (!isRecord(entry.overlay)) {
+        entry.overlay = { name };
+      }
+      overlays[name] = entry;
       draft.overlays = overlays;
     });
     setOverlayNameInput("");
@@ -1302,6 +1317,9 @@ export default function Config() {
         nested[field] = value;
       }
       entry[section] = nested;
+      if (section === "overlay" && OVERLAY_BLOCK_FIELDS.has(field)) {
+        delete entry[field];
+      }
       overlays[name] = entry;
       draft.overlays = overlays;
     });
@@ -1337,7 +1355,7 @@ export default function Config() {
     if (!entry || !entry.key.trim() || !entry.value.trim()) {
       return;
     }
-    handleOverlayField(name, entry.key.trim(), parseValueInput(entry.value));
+    handleOverlayNestedField(name, "overlay", entry.key.trim(), parseValueInput(entry.value));
     setOverlayAttributeInputs((prev) => ({
       ...prev,
       [name]: { key: entry.key, value: "" }
@@ -1345,7 +1363,7 @@ export default function Config() {
   };
 
   const handleOverlayAttributeRemove = (name: string, key: string) => {
-    handleOverlayField(name, key, "");
+    handleOverlayNestedField(name, "overlay", key, "");
   };
 
   const handleOverlayAttributeRename = (name: string, oldKey: string, newKey: string) => {
@@ -1355,11 +1373,13 @@ export default function Config() {
     updateFileDraft((draft) => {
       const overlays = isRecord(draft.overlays) ? { ...draft.overlays } : {};
       const entry = isRecord(overlays[name]) ? { ...(overlays[name] as Record<string, unknown>) } : {};
-      if (!(oldKey in entry)) {
+      const overlayBlock = isRecord(entry.overlay) ? { ...(entry.overlay as Record<string, unknown>) } : {};
+      if (!(oldKey in overlayBlock)) {
         return;
       }
-      entry[newKey.trim()] = entry[oldKey];
-      delete entry[oldKey];
+      overlayBlock[newKey.trim()] = overlayBlock[oldKey];
+      delete overlayBlock[oldKey];
+      entry.overlay = overlayBlock;
       overlays[name] = entry;
       draft.overlays = overlays;
     });
@@ -1554,11 +1574,13 @@ export default function Config() {
   );
 
   const buildOverlayPosition = useCallback(
-    (entry: Record<string, unknown>) => {
-      const horizontalAlign = typeof entry.horizontal_align === "string" ? entry.horizontal_align : "left";
-      const verticalAlign = typeof entry.vertical_align === "string" ? entry.vertical_align : "top";
-      const offsetX = parsePercentValue(entry.horizontal_offset, POSTER_BASE.width) * overlayScale;
-      const offsetY = parsePercentValue(entry.vertical_offset, POSTER_BASE.height) * overlayScale;
+    (overlayConfig: Record<string, unknown>) => {
+      const horizontalAlign =
+        typeof overlayConfig.horizontal_align === "string" ? overlayConfig.horizontal_align : "left";
+      const verticalAlign =
+        typeof overlayConfig.vertical_align === "string" ? overlayConfig.vertical_align : "top";
+      const offsetX = parsePercentValue(overlayConfig.horizontal_offset, POSTER_BASE.width) * overlayScale;
+      const offsetY = parsePercentValue(overlayConfig.vertical_offset, POSTER_BASE.height) * overlayScale;
 
       const style: Record<string, string> = {};
       const transforms: string[] = [];
@@ -2735,7 +2757,7 @@ export default function Config() {
             <div className="collection-list">
               {Object.entries(overlaysMap).map(([name, overlay]) => {
                 const entry = isRecord(overlay) ? overlay : {};
-                const overlayConfig = isRecord(entry.overlay) ? (entry.overlay as Record<string, unknown>) : {};
+                const overlayConfig = getOverlayConfig(entry);
                 const overlayMeta = parseOverlayName(overlayConfig.name);
                 const overlayType = overlayMeta.kind;
                 const overlayText = overlayMeta.kind === "text" ? overlayMeta.text ?? "" : "";
@@ -2748,7 +2770,9 @@ export default function Config() {
                   ([key]) => !OVERLAY_SEARCH_FIELDS.has(key)
                 );
                 const searchInput = overlaySearchInputs[name] ?? { key: "", value: "" };
-                const extraEntries = Object.entries(entry).filter(([key]) => !OVERLAY_ENTRY_FIELDS.has(key));
+                const extraEntries = Object.entries(overlayConfig).filter(
+                  ([key]) => !OVERLAY_BLOCK_FIELDS.has(key)
+                );
                 const extraInput = overlayAttributeInputs[name] ?? { key: "", value: "" };
                 return (
                   <div key={name} className="collection-card">
@@ -2892,9 +2916,14 @@ export default function Config() {
                           <span>Scale width</span>
                           <input
                             className="input"
-                            value={stringifyValue(entry.scale_width)}
+                            value={stringifyValue(overlayConfig.scale_width)}
                             onChange={(event) =>
-                              handleOverlayField(name, "scale_width", parseValueInput(event.target.value))
+                              handleOverlayNestedField(
+                                name,
+                                "overlay",
+                                "scale_width",
+                                parseValueInput(event.target.value)
+                              )
                             }
                             placeholder="300 or 20%"
                           />
@@ -2903,9 +2932,14 @@ export default function Config() {
                           <span>Scale height</span>
                           <input
                             className="input"
-                            value={stringifyValue(entry.scale_height)}
+                            value={stringifyValue(overlayConfig.scale_height)}
                             onChange={(event) =>
-                              handleOverlayField(name, "scale_height", parseValueInput(event.target.value))
+                              handleOverlayNestedField(
+                                name,
+                                "overlay",
+                                "scale_height",
+                                parseValueInput(event.target.value)
+                              )
                             }
                             placeholder="120 or 10%"
                           />
@@ -2919,8 +2953,8 @@ export default function Config() {
                           <span>Font</span>
                           <input
                             className="input"
-                            value={stringifyValue(entry.font)}
-                            onChange={(event) => handleOverlayField(name, "font", event.target.value)}
+                            value={stringifyValue(overlayConfig.font)}
+                            onChange={(event) => handleOverlayNestedField(name, "overlay", "font", event.target.value)}
                             placeholder="fonts/Inter-Medium.ttf"
                           />
                         </label>
@@ -2928,8 +2962,10 @@ export default function Config() {
                           <span>Font style</span>
                           <input
                             className="input"
-                            value={stringifyValue(entry.font_style)}
-                            onChange={(event) => handleOverlayField(name, "font_style", event.target.value)}
+                            value={stringifyValue(overlayConfig.font_style)}
+                            onChange={(event) =>
+                              handleOverlayNestedField(name, "overlay", "font_style", event.target.value)
+                            }
                             placeholder="italic, bold"
                           />
                         </label>
@@ -2937,9 +2973,14 @@ export default function Config() {
                           <span>Font size</span>
                           <input
                             className="input"
-                            value={stringifyValue(entry.font_size)}
+                            value={stringifyValue(overlayConfig.font_size)}
                             onChange={(event) =>
-                              handleOverlayField(name, "font_size", parseValueInput(event.target.value))
+                              handleOverlayNestedField(
+                                name,
+                                "overlay",
+                                "font_size",
+                                parseValueInput(event.target.value)
+                              )
                             }
                             placeholder="63"
                           />
@@ -2948,8 +2989,10 @@ export default function Config() {
                           <span>Font color</span>
                           <input
                             className="input"
-                            value={stringifyValue(entry.font_color)}
-                            onChange={(event) => handleOverlayField(name, "font_color", event.target.value)}
+                            value={stringifyValue(overlayConfig.font_color)}
+                            onChange={(event) =>
+                              handleOverlayNestedField(name, "overlay", "font_color", event.target.value)
+                            }
                             placeholder="#FFFFFF"
                           />
                         </label>
@@ -2957,8 +3000,10 @@ export default function Config() {
                           <span>Stroke color</span>
                           <input
                             className="input"
-                            value={stringifyValue(entry.stroke_color)}
-                            onChange={(event) => handleOverlayField(name, "stroke_color", event.target.value)}
+                            value={stringifyValue(overlayConfig.stroke_color)}
+                            onChange={(event) =>
+                              handleOverlayNestedField(name, "overlay", "stroke_color", event.target.value)
+                            }
                             placeholder="#000000"
                           />
                         </label>
@@ -2966,9 +3011,14 @@ export default function Config() {
                           <span>Stroke width</span>
                           <input
                             className="input"
-                            value={stringifyValue(entry.stroke_width)}
+                            value={stringifyValue(overlayConfig.stroke_width)}
                             onChange={(event) =>
-                              handleOverlayField(name, "stroke_width", parseValueInput(event.target.value))
+                              handleOverlayNestedField(
+                                name,
+                                "overlay",
+                                "stroke_width",
+                                parseValueInput(event.target.value)
+                              )
                             }
                             placeholder="2"
                           />
@@ -2977,8 +3027,10 @@ export default function Config() {
                           <span>Backdrop color</span>
                           <input
                             className="input"
-                            value={stringifyValue(entry.back_color)}
-                            onChange={(event) => handleOverlayField(name, "back_color", event.target.value)}
+                            value={stringifyValue(overlayConfig.back_color)}
+                            onChange={(event) =>
+                              handleOverlayNestedField(name, "overlay", "back_color", event.target.value)
+                            }
                             placeholder="#00000099"
                           />
                         </label>
@@ -2986,8 +3038,10 @@ export default function Config() {
                           <span>Backdrop align</span>
                           <select
                             className="input select"
-                            value={stringifyValue(entry.back_align)}
-                            onChange={(event) => handleOverlayField(name, "back_align", event.target.value)}
+                            value={stringifyValue(overlayConfig.back_align)}
+                            onChange={(event) =>
+                              handleOverlayNestedField(name, "overlay", "back_align", event.target.value)
+                            }
                           >
                             <option value="">Choose</option>
                             <option value="left">left</option>
@@ -3001,9 +3055,14 @@ export default function Config() {
                           <span>Backdrop width</span>
                           <input
                             className="input"
-                            value={stringifyValue(entry.back_width)}
+                            value={stringifyValue(overlayConfig.back_width)}
                             onChange={(event) =>
-                              handleOverlayField(name, "back_width", parseValueInput(event.target.value))
+                              handleOverlayNestedField(
+                                name,
+                                "overlay",
+                                "back_width",
+                                parseValueInput(event.target.value)
+                              )
                             }
                             placeholder="300"
                           />
@@ -3012,9 +3071,14 @@ export default function Config() {
                           <span>Backdrop height</span>
                           <input
                             className="input"
-                            value={stringifyValue(entry.back_height)}
+                            value={stringifyValue(overlayConfig.back_height)}
                             onChange={(event) =>
-                              handleOverlayField(name, "back_height", parseValueInput(event.target.value))
+                              handleOverlayNestedField(
+                                name,
+                                "overlay",
+                                "back_height",
+                                parseValueInput(event.target.value)
+                              )
                             }
                             placeholder="100"
                           />
@@ -3023,9 +3087,14 @@ export default function Config() {
                           <span>Backdrop padding</span>
                           <input
                             className="input"
-                            value={stringifyValue(entry.back_padding)}
+                            value={stringifyValue(overlayConfig.back_padding)}
                             onChange={(event) =>
-                              handleOverlayField(name, "back_padding", parseValueInput(event.target.value))
+                              handleOverlayNestedField(
+                                name,
+                                "overlay",
+                                "back_padding",
+                                parseValueInput(event.target.value)
+                              )
                             }
                             placeholder="30"
                           />
@@ -3034,9 +3103,14 @@ export default function Config() {
                           <span>Backdrop radius</span>
                           <input
                             className="input"
-                            value={stringifyValue(entry.back_radius)}
+                            value={stringifyValue(overlayConfig.back_radius)}
                             onChange={(event) =>
-                              handleOverlayField(name, "back_radius", parseValueInput(event.target.value))
+                              handleOverlayNestedField(
+                                name,
+                                "overlay",
+                                "back_radius",
+                                parseValueInput(event.target.value)
+                              )
                             }
                             placeholder="30"
                           />
@@ -3045,8 +3119,10 @@ export default function Config() {
                           <span>Backdrop line color</span>
                           <input
                             className="input"
-                            value={stringifyValue(entry.back_line_color)}
-                            onChange={(event) => handleOverlayField(name, "back_line_color", event.target.value)}
+                            value={stringifyValue(overlayConfig.back_line_color)}
+                            onChange={(event) =>
+                              handleOverlayNestedField(name, "overlay", "back_line_color", event.target.value)
+                            }
                             placeholder="#FFFFFF"
                           />
                         </label>
@@ -3054,9 +3130,14 @@ export default function Config() {
                           <span>Backdrop line width</span>
                           <input
                             className="input"
-                            value={stringifyValue(entry.back_line_width)}
+                            value={stringifyValue(overlayConfig.back_line_width)}
                             onChange={(event) =>
-                              handleOverlayField(name, "back_line_width", parseValueInput(event.target.value))
+                              handleOverlayNestedField(
+                                name,
+                                "overlay",
+                                "back_line_width",
+                                parseValueInput(event.target.value)
+                              )
                             }
                             placeholder="2"
                           />
@@ -3065,8 +3146,10 @@ export default function Config() {
                           <span>Addon position</span>
                           <select
                             className="input select"
-                            value={stringifyValue(entry.addon_position)}
-                            onChange={(event) => handleOverlayField(name, "addon_position", event.target.value)}
+                            value={stringifyValue(overlayConfig.addon_position)}
+                            onChange={(event) =>
+                              handleOverlayNestedField(name, "overlay", "addon_position", event.target.value)
+                            }
                           >
                             <option value="">Choose</option>
                             <option value="left">left</option>
@@ -3079,9 +3162,14 @@ export default function Config() {
                           <span>Addon offset</span>
                           <input
                             className="input"
-                            value={stringifyValue(entry.addon_offset)}
+                            value={stringifyValue(overlayConfig.addon_offset)}
                             onChange={(event) =>
-                              handleOverlayField(name, "addon_offset", parseValueInput(event.target.value))
+                              handleOverlayNestedField(
+                                name,
+                                "overlay",
+                                "addon_offset",
+                                parseValueInput(event.target.value)
+                              )
                             }
                             placeholder="25"
                           />
@@ -3095,8 +3183,10 @@ export default function Config() {
                           <span>Horizontal align</span>
                           <select
                             className="input select"
-                            value={stringifyValue(entry.horizontal_align)}
-                            onChange={(event) => handleOverlayField(name, "horizontal_align", event.target.value)}
+                            value={stringifyValue(overlayConfig.horizontal_align)}
+                            onChange={(event) =>
+                              handleOverlayNestedField(name, "overlay", "horizontal_align", event.target.value)
+                            }
                           >
                             <option value="">Choose</option>
                             <option value="left">left</option>
@@ -3108,8 +3198,10 @@ export default function Config() {
                           <span>Vertical align</span>
                           <select
                             className="input select"
-                            value={stringifyValue(entry.vertical_align)}
-                            onChange={(event) => handleOverlayField(name, "vertical_align", event.target.value)}
+                            value={stringifyValue(overlayConfig.vertical_align)}
+                            onChange={(event) =>
+                              handleOverlayNestedField(name, "overlay", "vertical_align", event.target.value)
+                            }
                           >
                             <option value="">Choose</option>
                             <option value="top">top</option>
@@ -3121,9 +3213,14 @@ export default function Config() {
                           <span>Horizontal offset</span>
                           <input
                             className="input"
-                            value={stringifyValue(entry.horizontal_offset)}
+                            value={stringifyValue(overlayConfig.horizontal_offset)}
                             onChange={(event) =>
-                              handleOverlayField(name, "horizontal_offset", parseValueInput(event.target.value))
+                              handleOverlayNestedField(
+                                name,
+                                "overlay",
+                                "horizontal_offset",
+                                parseValueInput(event.target.value)
+                              )
                             }
                             placeholder="0 or 10%"
                           />
@@ -3132,9 +3229,14 @@ export default function Config() {
                           <span>Vertical offset</span>
                           <input
                             className="input"
-                            value={stringifyValue(entry.vertical_offset)}
+                            value={stringifyValue(overlayConfig.vertical_offset)}
                             onChange={(event) =>
-                              handleOverlayField(name, "vertical_offset", parseValueInput(event.target.value))
+                              handleOverlayNestedField(
+                                name,
+                                "overlay",
+                                "vertical_offset",
+                                parseValueInput(event.target.value)
+                              )
                             }
                             placeholder="150 or 10%"
                           />
@@ -3148,8 +3250,8 @@ export default function Config() {
                           <span>Group</span>
                           <input
                             className="input"
-                            value={stringifyValue(entry.group)}
-                            onChange={(event) => handleOverlayField(name, "group", event.target.value)}
+                            value={stringifyValue(overlayConfig.group)}
+                            onChange={(event) => handleOverlayNestedField(name, "overlay", "group", event.target.value)}
                             placeholder="audio_language"
                           />
                         </label>
@@ -3157,8 +3259,8 @@ export default function Config() {
                           <span>Queue</span>
                           <input
                             className="input"
-                            value={stringifyValue(entry.queue)}
-                            onChange={(event) => handleOverlayField(name, "queue", event.target.value)}
+                            value={stringifyValue(overlayConfig.queue)}
+                            onChange={(event) => handleOverlayNestedField(name, "overlay", "queue", event.target.value)}
                             placeholder="custom_queue"
                           />
                         </label>
@@ -3166,9 +3268,14 @@ export default function Config() {
                           <span>Weight</span>
                           <input
                             className="input"
-                            value={stringifyValue(entry.weight)}
+                            value={stringifyValue(overlayConfig.weight)}
                             onChange={(event) =>
-                              handleOverlayField(name, "weight", parseValueInput(event.target.value))
+                              handleOverlayNestedField(
+                                name,
+                                "overlay",
+                                "weight",
+                                parseValueInput(event.target.value)
+                              )
                             }
                             placeholder="10"
                           />
@@ -3323,7 +3430,12 @@ export default function Config() {
                                   className="input"
                                   value={rendered}
                                   onChange={(event) =>
-                                    handleOverlayField(name, key, parseValueInput(event.target.value))
+                                    handleOverlayNestedField(
+                                      name,
+                                      "overlay",
+                                      key,
+                                      parseValueInput(event.target.value)
+                                    )
                                   }
                                 />
                               ) : (
@@ -3331,7 +3443,12 @@ export default function Config() {
                                   className="input"
                                   value={rendered}
                                   onChange={(event) =>
-                                    handleOverlayField(name, key, parseValueInput(event.target.value))
+                                    handleOverlayNestedField(
+                                      name,
+                                      "overlay",
+                                      key,
+                                      parseValueInput(event.target.value)
+                                    )
                                   }
                                 />
                               )}
@@ -3585,11 +3702,9 @@ export default function Config() {
                           return null;
                         }
                         const entry = isRecord(overlayEntry) ? overlayEntry : {};
-                        const overlayConfig = isRecord(entry.overlay)
-                          ? (entry.overlay as Record<string, unknown>)
-                          : {};
+                        const overlayConfig = getOverlayConfig(entry);
                         const overlayMeta = parseOverlayName(overlayConfig.name);
-                        const positionStyle = buildOverlayPosition(entry);
+                        const positionStyle = buildOverlayPosition(overlayConfig);
                         const baseStyle: CSSProperties = {
                           position: "absolute",
                           pointerEvents: "none",
@@ -3601,8 +3716,8 @@ export default function Config() {
                             ? resolveOverlayImage(overlayConfig, null)
                             : resolveOverlayImage(overlayConfig, overlayMeta.name || overlayName);
 
-                        const scaleWidth = parsePercentValue(entry.scale_width, POSTER_BASE.width);
-                        const scaleHeight = parsePercentValue(entry.scale_height, POSTER_BASE.height);
+                        const scaleWidth = parsePercentValue(overlayConfig.scale_width, POSTER_BASE.width);
+                        const scaleHeight = parsePercentValue(overlayConfig.scale_height, POSTER_BASE.height);
                         const imageStyle: CSSProperties = {};
                         if (scaleWidth > 0) {
                           imageStyle.width = `${scaleWidth * overlayScale}px`;
@@ -3633,17 +3748,17 @@ export default function Config() {
                         }
 
                         if (overlayMeta.kind === "backdrop") {
-                          const backWidth = parsePercentValue(entry.back_width, POSTER_BASE.width);
-                          const backHeight = parsePercentValue(entry.back_height, POSTER_BASE.height);
+                          const backWidth = parsePercentValue(overlayConfig.back_width, POSTER_BASE.width);
+                          const backHeight = parsePercentValue(overlayConfig.back_height, POSTER_BASE.height);
                           const backdropStyle: CSSProperties = {
                             width: backWidth ? `${backWidth * overlayScale}px` : "100%",
                             height: backHeight ? `${backHeight * overlayScale}px` : "100%",
-                            background: String(entry.back_color ?? "rgba(0, 0, 0, 0.4)"),
-                            borderRadius: `${(parseNumeric(entry.back_radius) ?? 0) * overlayScale}px`,
+                            background: String(overlayConfig.back_color ?? "rgba(0, 0, 0, 0.4)"),
+                            borderRadius: `${(parseNumeric(overlayConfig.back_radius) ?? 0) * overlayScale}px`,
                             border:
-                              entry.back_line_width || entry.back_line_color
-                                ? `${(parseNumeric(entry.back_line_width) ?? 1) * overlayScale}px solid ${
-                                    String(entry.back_line_color ?? "rgba(255,255,255,0.4)")
+                              overlayConfig.back_line_width || overlayConfig.back_line_color
+                                ? `${(parseNumeric(overlayConfig.back_line_width) ?? 1) * overlayScale}px solid ${
+                                    String(overlayConfig.back_line_color ?? "rgba(255,255,255,0.4)")
                                   }`
                                 : undefined
                           };
@@ -3671,23 +3786,24 @@ export default function Config() {
                           );
                         }
 
-                        const fontSize = (parseNumeric(entry.font_size) ?? 60) * overlayScale;
-                        const fontColor = String(entry.font_color ?? "#FFFFFF");
-                        const fontStyleValue = typeof entry.font_style === "string" ? entry.font_style.toLowerCase() : "";
-                        const fontFamily = typeof entry.font === "string" ? entry.font : "Space Grotesk";
-                        const strokeWidth = (parseNumeric(entry.stroke_width) ?? 0) * overlayScale;
-                        const strokeColor = String(entry.stroke_color ?? "#000000");
-                        const backPadding = (parseNumeric(entry.back_padding) ?? 0) * overlayScale;
-                        const backRadius = (parseNumeric(entry.back_radius) ?? 0) * overlayScale;
-                        const backWidth = parsePercentValue(entry.back_width, POSTER_BASE.width);
-                        const backHeight = parsePercentValue(entry.back_height, POSTER_BASE.height);
-                        const backLineWidth = (parseNumeric(entry.back_line_width) ?? 0) * overlayScale;
-                        const backLineColor = String(entry.back_line_color ?? "#FFFFFF");
-                        const addonOffset = (parseNumeric(entry.addon_offset) ?? 0) * overlayScale;
+                        const fontSize = (parseNumeric(overlayConfig.font_size) ?? 60) * overlayScale;
+                        const fontColor = String(overlayConfig.font_color ?? "#FFFFFF");
+                        const fontStyleValue =
+                          typeof overlayConfig.font_style === "string" ? overlayConfig.font_style.toLowerCase() : "";
+                        const fontFamily = typeof overlayConfig.font === "string" ? overlayConfig.font : "Space Grotesk";
+                        const strokeWidth = (parseNumeric(overlayConfig.stroke_width) ?? 0) * overlayScale;
+                        const strokeColor = String(overlayConfig.stroke_color ?? "#000000");
+                        const backPadding = (parseNumeric(overlayConfig.back_padding) ?? 0) * overlayScale;
+                        const backRadius = (parseNumeric(overlayConfig.back_radius) ?? 0) * overlayScale;
+                        const backWidth = parsePercentValue(overlayConfig.back_width, POSTER_BASE.width);
+                        const backHeight = parsePercentValue(overlayConfig.back_height, POSTER_BASE.height);
+                        const backLineWidth = (parseNumeric(overlayConfig.back_line_width) ?? 0) * overlayScale;
+                        const backLineColor = String(overlayConfig.back_line_color ?? "#FFFFFF");
+                        const addonOffset = (parseNumeric(overlayConfig.addon_offset) ?? 0) * overlayScale;
                         const addonPosition =
-                          typeof entry.addon_position === "string" ? entry.addon_position : "left";
+                          typeof overlayConfig.addon_position === "string" ? overlayConfig.addon_position : "left";
 
-                        const backAlign = typeof entry.back_align === "string" ? entry.back_align : "center";
+                        const backAlign = typeof overlayConfig.back_align === "string" ? overlayConfig.back_align : "center";
                         const alignItems =
                           backAlign === "left"
                             ? "flex-start"
@@ -3707,11 +3823,11 @@ export default function Config() {
                           fontFamily,
                           fontStyle: fontStyleValue.includes("italic") ? "italic" : "normal",
                           fontWeight: fontStyleValue.includes("bold") ? 700 : 500,
-                          background: entry.back_color ? String(entry.back_color) : "transparent",
+                          background: overlayConfig.back_color ? String(overlayConfig.back_color) : "transparent",
                           padding: backPadding ? `${backPadding}px` : "0px",
                           borderRadius: backRadius ? `${backRadius}px` : "0px",
                           border:
-                            backLineWidth || entry.back_line_color
+                            backLineWidth || overlayConfig.back_line_color
                               ? `${backLineWidth || 1}px solid ${backLineColor}`
                               : undefined,
                           width: backWidth ? `${backWidth * overlayScale}px` : "auto",
