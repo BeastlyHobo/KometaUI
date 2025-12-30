@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from starlette.responses import FileResponse
 
+from ..config_registry import get_active_config_path
 from ..db import get_run, insert_run, list_runs, update_run
 from ..docker_runner import run_kometa
 from ..log_utils import tail_lines
@@ -22,13 +23,19 @@ class RunCreate(BaseModel):
     trigger: str = "manual"
 
 
-def _run_task(settings: Settings, run_id: str, started_at: int, log_file: str) -> None:
+def _run_task(
+    settings: Settings,
+    run_id: str,
+    started_at: int,
+    log_file: str,
+    config_path: Path,
+) -> None:
     log_path = settings.log_dir / log_file
     status = "failed"
     error = None
     exit_code = None
     try:
-        exit_code = run_kometa(settings, log_path)
+        exit_code = run_kometa(settings, log_path, config_path)
         status = "success" if exit_code == 0 else "failed"
     except Exception as exc:  # noqa: BLE001
         error = str(exc)
@@ -52,10 +59,11 @@ def create_run(payload: RunCreate, settings: Settings = Depends(get_settings)) -
     log_file = time.strftime("ui-run-%Y%m%d-%H%M%S.log", time.localtime(started_at))
 
     insert_run(settings, run_id, started_at, "running", payload.trigger, log_file)
+    config_path = get_active_config_path(settings)
 
     thread = threading.Thread(
         target=_run_task,
-        args=(settings, run_id, started_at, log_file),
+        args=(settings, run_id, started_at, log_file, config_path),
         daemon=True,
     )
     thread.start()

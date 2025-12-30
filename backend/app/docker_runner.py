@@ -29,7 +29,20 @@ def check_container(settings: Settings) -> tuple[bool, str | None]:
     return True, None
 
 
-def run_kometa(settings: Settings, log_path: Path) -> int:
+def _build_kometa_cmd(settings: Settings, config_path: Path) -> list[str]:
+    cmd_template = settings.kometa_run_cmd
+    if "{config}" in cmd_template:
+        cmd = cmd_template.format(config=str(config_path))
+    else:
+        tokens = shlex.split(cmd_template)
+        if "-c" not in tokens and "--config" not in tokens:
+            cmd = f"{cmd_template} -c {shlex.quote(str(config_path))}"
+        else:
+            cmd = cmd_template
+    return shlex.split(cmd)
+
+
+def run_kometa(settings: Settings, log_path: Path, config_path: Path) -> int:
     if not docker_socket_enabled(settings):
         raise RuntimeError("Docker socket is not mounted")
 
@@ -39,7 +52,7 @@ def run_kometa(settings: Settings, log_path: Path) -> int:
     if container.status != "running":
         raise RuntimeError(f"Kometa container is not running (status: {container.status})")
 
-    cmd = shlex.split(settings.kometa_run_cmd)
+    cmd = _build_kometa_cmd(settings, config_path)
     api_client = client.api
     exec_info = api_client.exec_create(container.id, cmd, stdout=True, stderr=True)
     exec_id = exec_info.get("Id")

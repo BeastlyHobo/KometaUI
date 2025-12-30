@@ -12,6 +12,7 @@ class Settings(BaseSettings):
 
     port: int = 6161
     data_dir: Path = Path("/data")
+    config_dir: Path = Path("/config")
     config_file: Path = Path("/config/config.yml")
     log_dir: Path = Path("/logs")
 
@@ -24,7 +25,7 @@ class Settings(BaseSettings):
     docker_socket_path: Path = Path("/var/run/docker.sock")
 
     kometa_container_name: str = "kometa"
-    kometa_run_cmd: str = "python kometa.py -c /config/config.yml"
+    kometa_run_cmd: str = "python kometa.py -c {config}"
 
     @property
     def db_path(self) -> Path:

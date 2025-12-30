@@ -6,7 +6,26 @@ export type HealthResponse = {
   kometa_container_found: boolean;
   config_exists: boolean;
   config_path: string;
+  config_root?: string;
   log_dir: string;
+};
+
+export type ConfigEntry = {
+  path: string;
+  exists: boolean;
+  last_modified: number | null;
+};
+
+export type ConfigListResponse = {
+  active: string | null;
+  configs: ConfigEntry[];
+  root: string;
+};
+
+export type FileEntry = {
+  path: string;
+  last_modified: number | null;
+  size: number;
 };
 
 export type RunRecord = {
@@ -72,6 +91,34 @@ export function getConfig() {
   return apiFetch<{ path: string; yaml: string; last_modified: number }>("/api/config");
 }
 
+export function listConfigs() {
+  return apiFetch<ConfigListResponse>("/api/configs");
+}
+
+export function createConfig(payload: {
+  path: string;
+  create?: boolean;
+  content?: string;
+  set_active?: boolean;
+}) {
+  return apiFetch<{ ok: boolean; path?: string; last_modified?: number; error?: string }>(
+    "/api/configs",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
+export function setActiveConfig(path: string) {
+  return apiFetch<{ ok: boolean; path: string }>("/api/configs/active", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path })
+  });
+}
+
 export function validateConfig(yaml: string) {
   return apiFetch<{ ok: boolean; error?: string; line?: number; column?: number }>(
     "/api/config/validate",
@@ -89,6 +136,28 @@ export function saveConfig(yaml: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ yaml })
   });
+}
+
+export function listFiles(prefix?: string) {
+  const query = prefix ? `?prefix=${encodeURIComponent(prefix)}` : "";
+  return apiFetch<FileEntry[]>(`/api/files${query}`);
+}
+
+export function getFileContent(path: string) {
+  return apiFetch<{ path: string; yaml: string; last_modified: number }>(
+    `/api/files/content?path=${encodeURIComponent(path)}`
+  );
+}
+
+export function saveFile(path: string, yaml: string) {
+  return apiFetch<{ ok: boolean; last_modified?: number; error?: string; path?: string }>(
+    "/api/files",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, yaml })
+    }
+  );
 }
 
 export function createRun(trigger = "manual") {

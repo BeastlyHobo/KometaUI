@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .auth import AuthMiddleware
 from .db import init_db
-from .routes import config, health, logs, runs
+from .routes import config, files, health, logs, runs
 from .settings import get_settings
 
 
@@ -24,6 +24,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router, prefix="/api")
     app.include_router(config.router, prefix="/api")
+    app.include_router(files.router, prefix="/api")
     app.include_router(runs.router, prefix="/api")
     app.include_router(logs.router, prefix="/api")
 
