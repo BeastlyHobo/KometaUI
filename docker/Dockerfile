@@ -11,9 +11,8 @@ ENV PYTHONUNBUFFERED=1
 
 COPY backend/pyproject.toml /app/backend/pyproject.toml
 COPY backend/app /app/backend/app
-RUN pip install --no-cache-dir /app/backend
-
 COPY --from=frontend-build /frontend/dist /app/backend/app/static
+RUN pip install --no-cache-dir /app/backend
 COPY docker/entrypoint.sh /entrypoint.sh
 
 ENV PORT=6161 \
